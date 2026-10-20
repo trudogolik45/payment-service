@@ -9,7 +9,13 @@ from uuid import uuid4
 import httpx
 import pytest
 from app.models import Currency, Payment, PaymentStatus
-from app.webhook import WebhookDeliveryError, WebhookNotifier, pin_to_address, verify
+from app.webhook import (
+    WebhookDeliveryError,
+    WebhookNotifier,
+    create_http_client,
+    pin_to_address,
+    verify,
+)
 from app.webhook_policy import WebhookUrlPolicy
 
 
@@ -157,3 +163,15 @@ async def test_notifier_raises_on_connection_error() -> None:
 
     with pytest.raises(WebhookDeliveryError):
         await _notifier(handler).notify(_payment())
+
+
+def test_pin_strips_credentials_from_host_header() -> None:
+    _, headers, _ = pin_to_address("https://u:p@client.example/hook", "93.184.216.34")
+
+    assert headers == {"Host": "client.example"}
+
+
+async def test_http_client_has_no_keepalive_and_ignores_proxy_env() -> None:
+    async with create_http_client() as client:
+        assert client.trust_env is False
+        assert client._transport._pool._max_keepalive_connections == 0  # type: ignore[attr-defined]

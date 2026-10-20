@@ -86,3 +86,10 @@ async def test_slow_dns_is_rejected() -> None:
 )
 async def test_public_literal_addresses_are_allowed(url: str) -> None:
     await policy().validate(url)
+
+
+async def test_ip_literal_is_checked_without_dns() -> None:
+    async def exploding_resolver(host: str) -> list[str]:
+        raise AssertionError("resolver must not be called for IP literals")
+
+    await WebhookUrlPolicy("", resolver=exploding_resolver).validate("http://8.8.8.8/hook")
