@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from app.webhook_policy import WebhookUrlNotAllowedError, WebhookUrlPolicy
 
@@ -46,3 +48,18 @@ async def test_unresolvable_host_is_rejected() -> None:
 async def test_allowlisted_host_bypasses_network_check() -> None:
     await policy("webhook-sink, internal.example.com").validate("http://webhook-sink:8080/hook")
     await policy("webhook-sink, internal.example.com").validate("http://internal.example.com/x")
+
+
+async def test_allowlist_is_case_insensitive() -> None:
+    await policy("Webhook-Sink.").validate("http://WEBHOOK-SINK:8080/hook")
+
+
+async def test_slow_dns_is_rejected() -> None:
+    async def slow_resolver(host: str) -> list[str]:
+        await asyncio.sleep(10)
+        return ["93.184.216.34"]
+
+    with pytest.raises(WebhookUrlNotAllowedError):
+        await WebhookUrlPolicy("", resolver=slow_resolver, resolve_timeout=0.01).validate(
+            "https://slow.example.com/hook"
+        )

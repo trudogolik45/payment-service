@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from typing import Any
 
+from app.webhook_policy import WebhookUrlPolicy
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -197,3 +198,22 @@ async def test_allowlisted_private_host_is_accepted(
     )
 
     assert response.status_code == 202
+
+
+async def test_repeat_with_same_key_succeeds_even_if_webhook_host_stopped_resolving(
+    client: AsyncClient, auth_headers: dict[str, str], payment_body: dict[str, Any]
+) -> None:
+    headers = {**auth_headers, "Idempotency-Key": "k1"}
+    first = await client.post(URL, json=payment_body, headers=headers)
+    client._transport.app.state.webhook_policy = WebhookUrlPolicy(  # type: ignore[attr-defined]
+        "", resolver=_resolve_nothing
+    )
+
+    second = await client.post(URL, json=payment_body, headers=headers)
+
+    assert second.status_code == 202
+    assert second.json()["payment_id"] == first.json()["payment_id"]
+
+
+async def _resolve_nothing(host: str) -> list[str]:
+    return []

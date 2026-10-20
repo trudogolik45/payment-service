@@ -13,13 +13,17 @@ app = FastAPI(title="Webhook sink")
 received: list[dict[str, Any]] = []
 
 
+def _secret() -> str:
+    secret = os.environ.get("WEBHOOK_SECRET")
+    if not secret:
+        raise RuntimeError("WEBHOOK_SECRET is required to verify webhook signatures")
+    return secret
+
+
 @app.post("/webhooks", status_code=204)
 async def receive(request: Request) -> None:
     body = await request.body()
-    secret = os.environ.get("WEBHOOK_SECRET")
-    if secret and not hmac.compare_digest(
-        request.headers.get(SIGNATURE_HEADER, ""), sign(secret, body)
-    ):
+    if not hmac.compare_digest(request.headers.get(SIGNATURE_HEADER, ""), sign(_secret(), body)):
         raise HTTPException(401, "bad webhook signature")
     payload = await request.json()
     received.append(payload)

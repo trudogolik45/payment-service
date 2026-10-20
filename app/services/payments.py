@@ -29,10 +29,15 @@ class PaymentService:
         """Создаёт платёж и событие outbox одной транзакцией.
 
         Повторный запрос с тем же ключом возвращает уже созданный платёж;
-        тот же ключ с другим телом — ошибка. Webhook во внутреннюю сеть — ошибка.
+        тот же ключ с другим телом — ошибка. Webhook во внутреннюю сеть — ошибка
+        (проверяется только для нового платежа: повтор не должен зависеть от DNS).
+        Гонку двух первых запросов разрешает ON CONFLICT DO NOTHING.
         """
-        await self._webhook_policy.validate(str(data.webhook_url))
         fingerprint = request_fingerprint(data)
+        async with self._session.begin():
+            is_new = await self._get_by_idempotency_key(idempotency_key) is None
+        if is_new:
+            await self._webhook_policy.validate(str(data.webhook_url))
         async with self._session.begin():
             payment = await self._insert_if_absent(data, idempotency_key, fingerprint)
             if payment is not None:
@@ -45,7 +50,7 @@ class PaymentService:
                 return payment
 
         existing = await self._get_by_idempotency_key(idempotency_key)
-        if existing.request_hash != fingerprint:
+        if existing is None or existing.request_hash != fingerprint:
             raise IdempotencyConflictError(idempotency_key)
         return existing
 
@@ -71,6 +76,6 @@ class PaymentService:
         )
         return await self._session.scalar(stmt)
 
-    async def _get_by_idempotency_key(self, idempotency_key: str) -> Payment:
+    async def _get_by_idempotency_key(self, idempotency_key: str) -> Payment | None:
         stmt = select(Payment).where(Payment.idempotency_key == idempotency_key)
-        return (await self._session.scalars(stmt)).one()
+        return await self._session.scalar(stmt)

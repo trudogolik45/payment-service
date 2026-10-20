@@ -19,6 +19,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+WEBHOOK_URL_MAX_LENGTH = 2048
+
 
 class Base(DeclarativeBase):
     pass
@@ -53,7 +55,7 @@ class Payment(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
     request_hash: Mapped[str] = mapped_column(String(64))
-    webhook_url: Mapped[str] = mapped_column(String(2048))
+    webhook_url: Mapped[str] = mapped_column(String(WEBHOOK_URL_MAX_LENGTH))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     webhook_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -118,8 +118,10 @@ def build_consumer(settings: Settings) -> FastStream:
 
     @app.on_shutdown
     async def shutdown() -> None:
-        await app.context.get("http_client").aclose()
-        await app.context.get("engine").dispose()
+        if http_client := app.context.get("http_client"):
+            await http_client.aclose()
+        if engine := app.context.get("engine"):
+            await engine.dispose()
 
     return app
 

@@ -187,7 +187,7 @@ docker compose logs -f consumer
 | `RETRY_BASE_DELAY_SECONDS` | `2` | Базовая задержка retry (× 2 на каждую попытку) |
 | `WEBHOOK_TIMEOUT_SECONDS` | `5` | Таймаут запроса на webhook |
 | `WEBHOOK_SECRET` | обязателен, ≥ 16 символов | Секрет HMAC-подписи webhook |
-| `WEBHOOK_ALLOWED_HOSTS` | пусто | Хосты через запятую, которым разрешён webhook во внутреннюю сеть |
+| `WEBHOOK_ALLOWED_HOSTS` | пусто (`webhook-sink` в compose) | Хосты через запятую, которым разрешён webhook во внутреннюю сеть |
 | `OUTBOX_RETENTION_HOURS` / `OUTBOX_CLEANUP_INTERVAL_SECONDS` | `24` / `60` | Очистка опубликованных событий |
 | `OUTBOX_POLL_INTERVAL_SECONDS` / `OUTBOX_BATCH_SIZE` | `0.5` / `100` | Параметры relay |
 | `CONSUMER_PREFETCH_COUNT` | `10` | Prefetch consumer'а |
@@ -205,6 +205,10 @@ docker compose logs -f consumer
   с `x-delivery-limit`.
 - Событие outbox, которое не удаётся опубликовать в принципе, остаётся в таблице
   и логируется на каждой итерации; в проде нужен счётчик попыток и карантин.
+- Если шлюз списал деньги, а commit в БД не прошёл, повтор спишет ещё раз. Реальному
+  шлюзу нужно передавать ключ идемпотентности (например, `payment.id`).
+- Подпись webhook не содержит timestamp, поэтому перехваченный запрос можно повторить.
+  Защита — `X-Webhook-Timestamp` в подписываемой строке и окно допустимого возраста.
 
 ## Разработка
 

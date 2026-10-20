@@ -14,9 +14,10 @@ import logging
 import signal
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 from faststream.rabbit import RabbitBroker
-from sqlalchemy import Select, delete, select
+from sqlalchemy import CursorResult, Select, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.broker import NEW_PAYMENTS_QUEUE, PAYMENTS_EXCHANGE, create_broker, declare_topology
@@ -62,8 +63,8 @@ class OutboxRelay:
         threshold = datetime.now(UTC) - self._retention
         stmt = delete(OutboxEvent).where(OutboxEvent.published_at < threshold)
         async with self._session_factory() as session, session.begin():
-            deleted = await session.scalars(stmt.returning(OutboxEvent.id))
-            return len(list(deleted))
+            result = cast(CursorResult[Any], await session.execute(stmt))
+            return result.rowcount
 
     async def run(self, stop: asyncio.Event) -> None:
         next_cleanup = 0.0

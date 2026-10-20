@@ -31,16 +31,32 @@ def _is_internal(address: str) -> bool:
     return not ip.is_global
 
 
+def _normalize_host(host: str) -> str:
+    return host.strip().lower().rstrip(".")
+
+
 class WebhookUrlPolicy:
-    def __init__(self, allowed_hosts: str, *, resolver: Resolver = resolve_host) -> None:
-        self._allowed_hosts = {h.strip() for h in allowed_hosts.split(",") if h.strip()}
+    def __init__(
+        self,
+        allowed_hosts: str,
+        *,
+        resolver: Resolver = resolve_host,
+        resolve_timeout: float = 3,
+    ) -> None:
+        self._allowed_hosts = {_normalize_host(h) for h in allowed_hosts.split(",") if h.strip()}
         self._resolve = resolver
+        self._resolve_timeout = resolve_timeout
 
     async def validate(self, url: str) -> None:
-        host = urlsplit(url).hostname or ""
+        host = _normalize_host(urlsplit(url).hostname or "")
         if host in self._allowed_hosts:
             return
-        addresses = await self._resolve(host)
+        try:
+            addresses = await asyncio.wait_for(self._resolve(host), self._resolve_timeout)
+        except TimeoutError:
+            raise WebhookUrlNotAllowedError(
+                f"webhook_url host {host!r} resolve timed out"
+            ) from None
         if not addresses:
             raise WebhookUrlNotAllowedError(f"webhook_url host {host!r} does not resolve")
         if any(_is_internal(address) for address in addresses):

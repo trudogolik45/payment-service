@@ -1,11 +1,11 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, UrlConstraints, field_validator
 
-from app.models import Currency, Payment, PaymentStatus
+from app.models import WEBHOOK_URL_MAX_LENGTH, Currency, Payment, PaymentStatus
 
 PAYMENT_CREATED = "payment.created"
 
@@ -17,7 +17,7 @@ class PaymentCreate(BaseModel):
     currency: Currency
     description: str = Field(min_length=1, max_length=1000)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    webhook_url: HttpUrl
+    webhook_url: Annotated[HttpUrl, UrlConstraints(max_length=WEBHOOK_URL_MAX_LENGTH)]
 
     @field_validator("amount", mode="after")
     @classmethod

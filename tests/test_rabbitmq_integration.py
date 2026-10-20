@@ -147,8 +147,9 @@ async def test_successful_message_is_acked_and_dlq_stays_empty(
 
 
 @pytest.fixture
-async def webhook_sink_url() -> AsyncIterator[str]:
+async def webhook_sink_url(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
     """Демо-приёмник webhook'ов, поднятый в процессе тестов на свободном порту."""
+    monkeypatch.setenv("WEBHOOK_SECRET", base_settings().webhook_secret)
     config = uvicorn.Config(webhook_sink.app, host="127.0.0.1", port=0, log_level="warning")
     server = uvicorn.Server(config)
     serving = asyncio.create_task(server.serve())
@@ -180,3 +181,13 @@ async def test_consumer_starts_and_processes_payment_end_to_end(
     assert stored.webhook_delivered_at is not None
     assert webhook_sink.received[0]["payment_id"] == str(payment.id)
     assert webhook_sink.received[0]["event"] == "payment.succeeded"
+
+
+async def test_webhook_sink_rejects_bad_signature(webhook_sink_url: str) -> None:
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            webhook_sink_url, content=b"{}", headers={"X-Webhook-Signature": "sha256=bad"}
+        )
+
+    assert response.status_code == 401
+    assert webhook_sink.received == []

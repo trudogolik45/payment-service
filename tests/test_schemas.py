@@ -45,3 +45,10 @@ def test_rejects_non_http_webhook_url(url: str) -> None:
 def test_rejects_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         PaymentCreate.model_validate({**VALID, "status": "succeeded"})
+
+
+def test_rejects_webhook_url_longer_than_column() -> None:
+    url = "https://example.com/" + "a" * 2060
+
+    with pytest.raises(ValidationError):
+        PaymentCreate.model_validate({**VALID, "webhook_url": url})
