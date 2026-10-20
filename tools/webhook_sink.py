@@ -2,13 +2,14 @@
 
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from app.webhook import SIGNATURE_HEADER, TIMESTAMP_HEADER, verify
 from fastapi import FastAPI, HTTPException, Request
 
 log = logging.getLogger("webhook-sink")
-app = FastAPI(title="Webhook sink")
 received: list[dict[str, Any]] = []
 
 
@@ -17,6 +18,15 @@ def _secret() -> str:
     if not secret:
         raise RuntimeError("WEBHOOK_SECRET is required to verify webhook signatures")
     return secret
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    _secret()
+    yield
+
+
+app = FastAPI(title="Webhook sink", lifespan=lifespan)
 
 
 @app.post("/webhooks", status_code=204)

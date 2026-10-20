@@ -37,21 +37,37 @@ def verify(
     *,
     max_age_seconds: int = SIGNATURE_MAX_AGE_SECONDS,
 ) -> bool:
-    if not timestamp.isdigit() or abs(time.time() - int(timestamp)) > max_age_seconds:
+    """Любой мусор во входе — False, а не исключение."""
+    if not (timestamp.isascii() and timestamp.isdecimal() and len(timestamp) <= 12):
         return False
-    return hmac.compare_digest(signature, sign(secret, timestamp, body))
+    if abs(time.time() - int(timestamp)) > max_age_seconds:
+        return False
+    try:
+        return hmac.compare_digest(signature.encode(), sign(secret, timestamp, body).encode())
+    except UnicodeEncodeError:
+        return False
 
 
 def pin_to_address(url: str, address: str) -> tuple[str, dict[str, str], dict[str, Any]]:
     """URL на проверенный IP; Host и SNI остаются исходными, чтобы TLS и роутинг не сломались."""
     parts = urlsplit(url)
     host = parts.hostname or ""
-    netloc = f"[{address}]" if ":" in address else address
-    if parts.port is not None:
-        netloc = f"{netloc}:{parts.port}"
+    port = f":{parts.port}" if parts.port is not None else ""
+    host_header = (f"[{host}]" if ":" in host else host) + port
+    netloc = (f"[{address}]" if ":" in address else address) + port
     pinned = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
     extensions = {"sni_hostname": host} if parts.scheme == "https" else {}
-    return pinned, {"Host": parts.netloc}, extensions
+    return pinned, {"Host": host_header}, extensions
+
+
+def create_http_client() -> httpx.AsyncClient:
+    """Клиент для webhook'ов: без keep-alive и без прокси из окружения.
+
+    Соединение пиннингуется на IP с подменой SNI, а пул httpcore различает
+    соединения только по (scheme, host, port) — keep-alive дал бы переиспользовать
+    TLS-сессию хоста A для хоста B на том же IP. Прокси сломал бы и пиннинг, и SNI.
+    """
+    return httpx.AsyncClient(trust_env=False, limits=httpx.Limits(max_keepalive_connections=0))
 
 
 class WebhookNotifier:

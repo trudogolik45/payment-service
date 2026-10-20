@@ -19,6 +19,14 @@ class PaymentCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     webhook_url: Annotated[HttpUrl, UrlConstraints(max_length=WEBHOOK_URL_MAX_LENGTH)]
 
+    @field_validator("webhook_url", mode="after")
+    @classmethod
+    def forbid_credentials(cls, url: HttpUrl) -> HttpUrl:
+        """Логин и пароль в URL попали бы в логи и заголовок Host."""
+        if url.username is not None or url.password is not None:
+            raise ValueError("webhook_url must not contain credentials")
+        return url
+
     @field_validator("amount", mode="after")
     @classmethod
     def normalize_amount(cls, amount: Decimal) -> Decimal:

@@ -3,7 +3,6 @@ import logging
 from typing import Protocol
 from uuid import UUID
 
-import httpx
 from faststream import Context, FastStream
 from faststream.exceptions import NackMessage
 from faststream.rabbit import Channel, RabbitBroker, RabbitMessage
@@ -23,7 +22,7 @@ from app.gateway import SimulatedGateway
 from app.log_config import LOG_FORMAT
 from app.schemas import PaymentCreatedEvent
 from app.services.processing import PaymentNotFoundError, PaymentProcessor
-from app.webhook import WebhookNotifier
+from app.webhook import WebhookNotifier, create_http_client
 from app.webhook_policy import WebhookUrlPolicy
 
 log = logging.getLogger(__name__)
@@ -99,7 +98,7 @@ def build_consumer(settings: Settings) -> FastStream:
         await declare_topology(broker, settings)
 
         engine = create_engine(settings.database_url, pool_size=settings.consumer_prefetch_count)
-        http_client = httpx.AsyncClient()
+        http_client = create_http_client()
         processor = PaymentProcessor(
             create_session_factory(engine),
             SimulatedGateway(

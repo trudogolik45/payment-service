@@ -36,6 +36,8 @@ async def test_allowlisted_host_returns_no_addresses_to_pin() -> None:
         "http://169.254.169.254/latest/meta-data",
         "http://[::1]/hook",
         "http://[::ffff:10.0.0.1]/hook",
+        "http://[::ffff:0:a00:1]/hook",
+        "http://[::a00:1]/hook",
         "http://[64:ff9b::a00:1]/hook",
         "http://[2002:a00:1::1]/hook",
         "http://internal.example.com/hook",
@@ -70,3 +72,17 @@ async def test_slow_dns_is_rejected() -> None:
         await WebhookUrlPolicy("", resolver=slow_resolver, resolve_timeout=0.01).validate(
             "https://slow.example.com/hook"
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://8.8.8.8/hook",
+        "http://[2606:4700::1111]/hook",
+        "http://[::ffff:8.8.8.8]/hook",
+        "http://[64:ff9b::808:808]/hook",
+        "http://[2002:808:808::1]/hook",
+    ],
+)
+async def test_public_literal_addresses_are_allowed(url: str) -> None:
+    await policy().validate(url)

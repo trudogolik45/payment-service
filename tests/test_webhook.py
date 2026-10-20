@@ -9,7 +9,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from app.models import Currency, Payment, PaymentStatus
-from app.webhook import WebhookDeliveryError, WebhookNotifier, verify
+from app.webhook import WebhookDeliveryError, WebhookNotifier, pin_to_address, verify
 from app.webhook_policy import WebhookUrlPolicy
 
 
@@ -90,8 +90,29 @@ def test_verify_rejects_stale_timestamp() -> None:
     assert not verify(SECRET, old, signature, body)
 
 
-def test_verify_rejects_garbage_timestamp() -> None:
-    assert not verify(SECRET, "not-a-number", "sha256=00", b"{}")
+@pytest.mark.parametrize("timestamp", ["not-a-number", "²", "1" * 5000, "", "-1"])
+def test_verify_rejects_garbage_timestamp(timestamp: str) -> None:
+    assert not verify(SECRET, timestamp, "sha256=00", b"{}")
+
+
+def test_verify_rejects_non_ascii_signature() -> None:
+    assert not verify(SECRET, str(int(time.time())), "sha256=é", b"{}")
+
+
+def test_pin_keeps_port_in_host_header_and_ipv6_in_brackets() -> None:
+    url, headers, extensions = pin_to_address("https://client.example:8443/hook?x=1", "2001:db8::1")
+
+    assert url == "https://[2001:db8::1]:8443/hook?x=1"
+    assert headers == {"Host": "client.example:8443"}
+    assert extensions == {"sni_hostname": "client.example"}
+
+
+def test_pin_over_plain_http_has_no_sni() -> None:
+    url, headers, extensions = pin_to_address("http://client.example/hook", "93.184.216.34")
+
+    assert url == "http://93.184.216.34/hook"
+    assert headers == {"Host": "client.example"}
+    assert extensions == {}
 
 
 async def test_notifier_pins_connection_to_validated_ip() -> None:

@@ -60,10 +60,10 @@ webhook уходит, retry не нужен.
 - **Dead Letter Queue.** После последней неудачной попытки (или если платёж из сообщения
   не найден в БД) сообщение отклоняется, и RabbitMQ через `x-dead-letter-exchange`
   переносит его в `payments.dlq`. В заголовке `x-death` — история.
-- **Лимит доставок.** `payments.new` — quorum-очередь с `x-delivery-limit`. Если consumer
-  умирает посреди обработки, сообщение возвращается без увеличения `x-attempt`; после
-  трёх таких возвратов RabbitMQ сам отправляет его в DLQ (`x-death.reason =
-  delivery_limit`).
+- **Лимит доставок.** `payments.new` — quorum-очередь с `x-delivery-limit = 3`. Если
+  consumer умирает посреди обработки, сообщение возвращается без увеличения `x-attempt`;
+  четвёртую такую доставку RabbitMQ не делает, а сам отправляет сообщение в DLQ
+  (`x-death.reason = delivery_limit`).
 - **Аутентификация.** Статический ключ в заголовке `X-API-Key` для всех эндпоинтов API.
   `GET /health` — liveness-проба без ключа.
 - **Подпись webhook.** Строка `<timestamp>.<body>` подписывается HMAC-SHA256
@@ -74,6 +74,9 @@ webhook уходит, retry не нужен.
   link-local, IPv4 в IPv6-обёртках, не резолвится) отклоняется с `422`. Перед каждой
   отправкой адрес резолвится и проверяется снова, а соединение идёт на проверенный IP
   с исходными `Host` и SNI — DNS rebinding между созданием и доставкой не проходит.
+  HTTP-клиент webhook'ов без keep-alive и без прокси из окружения, чтобы TLS-сессия
+  одного хоста не переиспользовалась для другого на том же IP. Логин и пароль в URL
+  запрещены.
   Исключение — хосты из `WEBHOOK_ALLOWED_HOSTS` (в compose это `webhook-sink`).
 - **Очистка outbox.** Relay раз в `OUTBOX_CLEANUP_INTERVAL_SECONDS` удаляет опубликованные
   события старше `OUTBOX_RETENTION_HOURS`.
@@ -203,7 +206,8 @@ docker compose logs -f consumer
 | `*_PORT` | `5432`, `5672`, `15672`, `8000`, `8080` | Порты на хосте |
 
 Аргументы очередей фиксируются при первом объявлении: после смены `MAX_ATTEMPTS`
-или `RETRY_BASE_DELAY_SECONDS` удалите старые очереди `payments.new.retry.*`.
+или `RETRY_BASE_DELAY_SECONDS` удалите старые очереди `payments.new.retry.*`, после
+смены типа или лимита `payments.new` — её саму (или `docker compose down -v`).
 
 ## Ограничения
 
@@ -213,6 +217,8 @@ docker compose logs -f consumer
   шлюзу нужно передавать ключ идемпотентности (например, `payment.id`).
 - `basic.nack` с requeue (сбой публикации в retry-очередь) в RabbitMQ 4.x не считается
   в `x-delivery-limit`; такой возврат ограничен только паузой перед nack.
+- DNS-резолв `webhook_url` идёт в обработке `POST` (до 3 с таймаута); таймаут прерывает
+  ожидание, но не сам поток резолва.
 
 ## Разработка
 

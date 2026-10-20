@@ -16,7 +16,12 @@ from urllib.parse import urlsplit
 
 Resolver = Callable[[str], Awaitable[list[str]]]
 
-NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
+# IPv6-префиксы, последние 32 бита которых — IPv4-адрес
+EMBEDDED_IPV4_PREFIXES = (
+    ipaddress.IPv6Network("64:ff9b::/96"),  # NAT64
+    ipaddress.IPv6Network("::ffff:0:0:0/96"),  # IPv4-translated (SIIT)
+    ipaddress.IPv6Network("::/96"),  # IPv4-compatible (устаревший)
+)
 
 
 class WebhookUrlNotAllowedError(Exception):
@@ -40,7 +45,7 @@ def _unwrap_ipv4(
         return ip.ipv4_mapped
     if ip.sixtofour is not None:
         return ip.sixtofour
-    if ip in NAT64_PREFIX:
+    if any(ip in prefix for prefix in EMBEDDED_IPV4_PREFIXES):
         return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     return ip
 
@@ -51,6 +56,14 @@ def _is_internal(address: str) -> bool:
 
 def _normalize_host(host: str) -> str:
     return host.strip().lower().rstrip(".")
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 class WebhookUrlPolicy:
@@ -70,12 +83,15 @@ class WebhookUrlPolicy:
         host = _normalize_host(urlsplit(url).hostname or "")
         if host in self._allowed_hosts:
             return []
-        try:
-            addresses = await asyncio.wait_for(self._resolve(host), self._resolve_timeout)
-        except TimeoutError:
-            raise WebhookUrlNotAllowedError(f"webhook_url host {host!r}: DNS timeout") from None
+        addresses = [host] if _is_ip_literal(host) else await self._resolve_with_timeout(host)
         if not addresses:
             raise WebhookUrlNotAllowedError(f"webhook_url host {host!r} does not resolve")
         if any(_is_internal(address) for address in addresses):
             raise WebhookUrlNotAllowedError(f"webhook_url host {host!r} is not a public address")
         return addresses
+
+    async def _resolve_with_timeout(self, host: str) -> list[str]:
+        try:
+            return await asyncio.wait_for(self._resolve(host), self._resolve_timeout)
+        except TimeoutError:
+            raise WebhookUrlNotAllowedError(f"webhook_url host {host!r}: DNS timeout") from None

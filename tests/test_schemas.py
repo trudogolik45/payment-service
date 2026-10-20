@@ -52,3 +52,8 @@ def test_rejects_webhook_url_longer_than_column() -> None:
 
     with pytest.raises(ValidationError):
         PaymentCreate.model_validate({**VALID, "webhook_url": url})
+
+
+def test_rejects_webhook_url_with_credentials() -> None:
+    with pytest.raises(ValidationError):
+        PaymentCreate.model_validate({**VALID, "webhook_url": "https://user:pass@example.com/hook"})
