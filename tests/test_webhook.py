@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -25,9 +27,12 @@ def _payment() -> Payment:
     )
 
 
+SECRET = "webhook-secret-for-tests"
+
+
 def _notifier(handler: object) -> WebhookNotifier:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
-    return WebhookNotifier(client, timeout_seconds=1)
+    return WebhookNotifier(client, secret=SECRET, timeout_seconds=1)
 
 
 async def test_notifier_posts_payment_result_to_webhook_url() -> None:
@@ -48,6 +53,20 @@ async def test_notifier_posts_payment_result_to_webhook_url() -> None:
     assert body["amount"] == "10.00"
     assert body["currency"] == "EUR"
     assert body["metadata"] == {"order_id": 7}
+
+
+async def test_notifier_signs_body_with_hmac_sha256() -> None:
+    received: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received.append(request)
+        return httpx.Response(200)
+
+    await _notifier(handler).notify(_payment())
+
+    request = received[0]
+    expected = hmac.new(SECRET.encode(), request.content, hashlib.sha256).hexdigest()
+    assert request.headers["X-Webhook-Signature"] == f"sha256={expected}"
 
 
 async def test_notifier_raises_on_non_2xx() -> None:

@@ -7,6 +7,7 @@ from app.auth import require_api_key
 from app.dependencies import get_payment_service
 from app.schemas import PaymentAccepted, PaymentCreate, PaymentOut
 from app.services.payments import IdempotencyConflictError, PaymentService
+from app.webhook_policy import WebhookUrlNotAllowedError
 
 router = APIRouter(
     prefix="/api/v1/payments", tags=["payments"], dependencies=[Depends(require_api_key)]
@@ -27,7 +28,10 @@ IdempotencyKey = Annotated[
     "",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=PaymentAccepted,
-    responses={409: {"description": "Idempotency-Key уже использован с другим телом"}},
+    responses={
+        409: {"description": "Idempotency-Key уже использован с другим телом"},
+        422: {"description": "Невалидное тело или webhook_url во внутреннюю сеть"},
+    },
 )
 async def create_payment(
     body: PaymentCreate,
@@ -40,6 +44,8 @@ async def create_payment(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Idempotency-Key already used with a different payload"
         ) from None
+    except WebhookUrlNotAllowedError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
     return PaymentAccepted.from_model(payment)
 
 

@@ -26,6 +26,8 @@ def base_settings() -> Settings:
     """Адреса инфраструктуры из .env, если он есть; остальное — тестовые значения."""
     return Settings(
         api_key=API_KEY,
+        webhook_secret="webhook-secret-for-tests",
+        webhook_allowed_hosts="webhook-sink, 127.0.0.1",
         gateway_min_delay_seconds=0,
         gateway_max_delay_seconds=0,
         retry_base_delay_seconds=2,

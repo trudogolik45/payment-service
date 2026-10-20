@@ -5,6 +5,7 @@
 а commit нет, событие будет опубликовано повторно; consumer идемпотентен.
 Сбой публикации одного события не блокирует остальные: строка остаётся
 неопубликованной и будет взята снова на следующей итерации.
+Опубликованные события старше retention периодически удаляются.
 """
 
 import asyncio
@@ -12,10 +13,10 @@ import contextlib
 import logging
 import signal
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from faststream.rabbit import RabbitBroker
-from sqlalchemy import Select, select
+from sqlalchemy import Select, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.broker import NEW_PAYMENTS_QUEUE, PAYMENTS_EXCHANGE, create_broker, declare_topology
@@ -40,11 +41,15 @@ class OutboxRelay:
         *,
         batch_size: int,
         poll_interval_seconds: float,
+        retention: timedelta = timedelta(hours=24),
+        cleanup_interval_seconds: float = 60,
     ) -> None:
         self._session_factory = session_factory
         self._publish = publisher
         self._batch_size = batch_size
         self._poll_interval = poll_interval_seconds
+        self._retention = retention
+        self._cleanup_interval = cleanup_interval_seconds
 
     async def relay_once(self) -> int:
         """Публикует одну пачку неопубликованных событий. Возвращает число опубликованных."""
@@ -52,8 +57,20 @@ class OutboxRelay:
             events: list[OutboxEvent] = list(await session.scalars(self._pending_batch()))
             return sum([await self._publish_one(event) for event in events])
 
+    async def cleanup_once(self) -> int:
+        """Удаляет опубликованные события старше retention. Возвращает число удалённых."""
+        threshold = datetime.now(UTC) - self._retention
+        stmt = delete(OutboxEvent).where(OutboxEvent.published_at < threshold)
+        async with self._session_factory() as session, session.begin():
+            deleted = await session.scalars(stmt.returning(OutboxEvent.id))
+            return len(list(deleted))
+
     async def run(self, stop: asyncio.Event) -> None:
+        next_cleanup = 0.0
         while not stop.is_set():
+            if asyncio.get_running_loop().time() >= next_cleanup:
+                await self._cleanup_safely()
+                next_cleanup = asyncio.get_running_loop().time() + self._cleanup_interval
             published = await self._relay_safely()
             if published < self._batch_size:
                 await self._sleep(stop)
@@ -73,6 +90,15 @@ class OutboxRelay:
         except Exception:
             log.exception("outbox relay iteration failed")
             return 0
+
+    async def _cleanup_safely(self) -> None:
+        try:
+            deleted = await self.cleanup_once()
+        except Exception:
+            log.exception("outbox cleanup failed")
+            return
+        if deleted:
+            log.info("outbox cleanup: %d published events removed", deleted)
 
     async def _sleep(self, stop: asyncio.Event) -> None:
         with contextlib.suppress(TimeoutError):
@@ -117,6 +143,8 @@ async def main(settings: Settings) -> None:
             rabbit_publisher(broker),
             batch_size=settings.outbox_batch_size,
             poll_interval_seconds=settings.outbox_poll_interval_seconds,
+            retention=timedelta(hours=settings.outbox_retention_hours),
+            cleanup_interval_seconds=settings.outbox_cleanup_interval_seconds,
         )
         log.info("outbox relay started")
         await relay.run(stop)

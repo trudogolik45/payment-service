@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.models import OutboxEvent
@@ -96,3 +97,37 @@ async def test_relay_respects_batch_size(
 
     assert await relay.relay_once() == 2
     assert await relay.relay_once() == 1
+
+
+async def test_cleanup_deletes_only_old_published_events(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    now = datetime.now(UTC)
+    async with session_factory() as session:
+        session.add_all(
+            [
+                OutboxEvent(
+                    event_type="payment.created", payload={}, published_at=now - timedelta(days=2)
+                ),
+                OutboxEvent(event_type="payment.created", payload={}, published_at=now),
+                OutboxEvent(event_type="payment.created", payload={}, published_at=None),
+            ]
+        )
+        await session.commit()
+    relay = OutboxRelay(
+        session_factory,
+        publisher=_noop,
+        batch_size=10,
+        poll_interval_seconds=0,
+        retention=timedelta(hours=24),
+    )
+
+    deleted = await relay.cleanup_once()
+
+    assert deleted == 1
+    remaining = await fetch_outbox(session_factory)
+    assert [e.published_at is None for e in remaining] == [False, True]
+
+
+async def _noop(event: OutboxEvent) -> None:
+    pass

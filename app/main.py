@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.payments import router
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
+from app.webhook_policy import WebhookUrlPolicy
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -18,6 +19,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(title="Payment Service", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
+    app.state.webhook_policy = WebhookUrlPolicy(settings.webhook_allowed_hosts)
     app.include_router(router)
 
     @app.get("/health", tags=["service"], include_in_schema=False)

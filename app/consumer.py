@@ -106,7 +106,11 @@ def build_consumer(settings: Settings) -> FastStream:
                 max_delay_seconds=settings.gateway_max_delay_seconds,
                 success_rate=settings.gateway_success_rate,
             ),
-            WebhookNotifier(http_client, timeout_seconds=settings.webhook_timeout_seconds),
+            WebhookNotifier(
+                http_client,
+                secret=settings.webhook_secret,
+                timeout_seconds=settings.webhook_timeout_seconds,
+            ),
         )
         app.context.set_global("processor", processor)
         app.context.set_global("engine", engine)

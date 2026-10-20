@@ -62,6 +62,13 @@ webhook уходит, retry не нужен.
   переносит его в `payments.dlq`. В заголовке `x-death` — история.
 - **Аутентификация.** Статический ключ в заголовке `X-API-Key` для всех эндпоинтов API.
   `GET /health` — liveness-проба без ключа.
+- **Подпись webhook.** Тело подписывается HMAC-SHA256 с `WEBHOOK_SECRET`, подпись в заголовке
+  `X-Webhook-Signature: sha256=<hex>`. Получатель проверяет её и отбрасывает подделки.
+- **Защита от SSRF.** `webhook_url` с хостом во внутренней сети (loopback, private,
+  link-local, не резолвится) отклоняется с `422`. Исключение — хосты из
+  `WEBHOOK_ALLOWED_HOSTS` (в compose это `webhook-sink`).
+- **Очистка outbox.** Relay раз в `OUTBOX_CLEANUP_INTERVAL_SECONDS` удаляет опубликованные
+  события старше `OUTBOX_RETENTION_HOURS`.
 
 ## Запуск
 
@@ -102,6 +109,7 @@ curl -s -X POST http://localhost:8000/api/v1/payments \
 
 Повторный запрос с тем же `Idempotency-Key` вернёт тот же `payment_id`.
 Тот же ключ с другим телом — `409`. Без заголовка — `422`. Без `X-API-Key` — `401`.
+`webhook_url` во внутреннюю сеть (например `http://10.0.0.1/hook`) — `422`.
 
 ### Получить платёж
 
@@ -143,6 +151,7 @@ curl -s http://localhost:8000/api/v1/payments/<payment_id> -H "X-API-Key: dev-ap
 }
 ```
 
+Заголовок `X-Webhook-Signature: sha256=<hex>` — HMAC-SHA256 от тела с `WEBHOOK_SECRET`.
 Любой ответ не 2xx или сетевая ошибка считаются неудачной доставкой и запускают retry.
 Посмотреть, что получил демо-приёмник: `curl -s http://localhost:8080/webhooks`.
 
@@ -177,6 +186,9 @@ docker compose logs -f consumer
 | `MAX_ATTEMPTS` | `3` | Всего попыток обработки сообщения |
 | `RETRY_BASE_DELAY_SECONDS` | `2` | Базовая задержка retry (× 2 на каждую попытку) |
 | `WEBHOOK_TIMEOUT_SECONDS` | `5` | Таймаут запроса на webhook |
+| `WEBHOOK_SECRET` | обязателен, ≥ 16 символов | Секрет HMAC-подписи webhook |
+| `WEBHOOK_ALLOWED_HOSTS` | пусто | Хосты через запятую, которым разрешён webhook во внутреннюю сеть |
+| `OUTBOX_RETENTION_HOURS` / `OUTBOX_CLEANUP_INTERVAL_SECONDS` | `24` / `60` | Очистка опубликованных событий |
 | `OUTBOX_POLL_INTERVAL_SECONDS` / `OUTBOX_BATCH_SIZE` | `0.5` / `100` | Параметры relay |
 | `CONSUMER_PREFETCH_COUNT` | `10` | Prefetch consumer'а |
 | `*_PORT` | `5432`, `5672`, `15672`, `8000`, `8080` | Порты на хосте |
@@ -184,21 +196,15 @@ docker compose logs -f consumer
 Аргументы очередей (TTL retry-очередей) фиксируются при первом объявлении: после смены
 `MAX_ATTEMPTS` или `RETRY_BASE_DELAY_SECONDS` удалите старые очереди `payments.new.retry.*`.
 
-## Что осознанно не сделано
+## Ограничения
 
-- **Фильтр SSRF для `webhook_url`.** Принимается любой http(s)-адрес, в том числе внутри
-  docker-сети — демо этим и пользуется (`webhook-sink`). В проде нужен allowlist хостов
-  или запрет private/loopback-адресов после резолва.
-- **Подпись webhook.** Получатель не может проверить подлинность. Решение — HMAC-заголовок
-  с общим секретом.
-- **Очистка и карантин `outbox`.** Опубликованные строки не удаляются; частичный индекс
-  по неопубликованным держит выборку быстрой, но таблица растёт. Нужен периодический
-  `DELETE … WHERE published_at < now() - interval '7 days'`. Событие, которое не удаётся
-  опубликовать в принципе, остаётся в таблице и логируется на каждой итерации; в проде
-  нужен счётчик попыток и карантин.
-- **Лимит доставок при падении consumer'а.** Если процесс умирает посреди обработки,
-  сообщение возвращается в очередь без увеличения `x-attempt`. Для classic queue лимита
-  нет; защита — quorum queue с `x-delivery-limit`.
+- Защита от SSRF проверяет адрес при создании платежа; от DNS rebinding между созданием
+  и доставкой она не защищает.
+- Если consumer умирает посреди обработки, сообщение возвращается в очередь без увеличения
+  `x-attempt`. Для classic queue лимита доставок нет; защита — quorum queue
+  с `x-delivery-limit`.
+- Событие outbox, которое не удаётся опубликовать в принципе, остаётся в таблице
+  и логируется на каждой итерации; в проде нужен счётчик попыток и карантин.
 
 ## Разработка
 
@@ -242,10 +248,11 @@ app/
   services/payments.py создание платежа + outbox, идемпотентность
   services/processing.py обработчик платежа (шлюз → БД → webhook)
   gateway.py           эмуляция платёжного шлюза
-  webhook.py           отправка webhook
+  webhook.py           отправка webhook с HMAC-подписью
+  webhook_policy.py    защита от SSRF для webhook_url
   broker.py            топология RabbitMQ: exchange, очереди, retry, DLQ
   consumer.py          FastStream-приложение, retry/DLQ-логика
-  outbox_relay.py      outbox → RabbitMQ
+  outbox_relay.py      outbox → RabbitMQ, очистка старых событий
 alembic/               миграции
 tests/                 pytest
 tools/webhook_sink.py  демо-приёмник webhook'ов

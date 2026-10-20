@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import OutboxEvent, Payment
 from app.schemas import PAYMENT_CREATED, PaymentCreate, PaymentCreatedEvent
+from app.webhook_policy import WebhookUrlPolicy
 
 
 class IdempotencyConflictError(Exception):
@@ -20,15 +21,17 @@ def request_fingerprint(data: PaymentCreate) -> str:
 
 
 class PaymentService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, webhook_policy: WebhookUrlPolicy) -> None:
         self._session = session
+        self._webhook_policy = webhook_policy
 
     async def create(self, data: PaymentCreate, idempotency_key: str) -> Payment:
         """Создаёт платёж и событие outbox одной транзакцией.
 
         Повторный запрос с тем же ключом возвращает уже созданный платёж;
-        тот же ключ с другим телом — ошибка.
+        тот же ключ с другим телом — ошибка. Webhook во внутреннюю сеть — ошибка.
         """
+        await self._webhook_policy.validate(str(data.webhook_url))
         fingerprint = request_fingerprint(data)
         async with self._session.begin():
             payment = await self._insert_if_absent(data, idempotency_key, fingerprint)

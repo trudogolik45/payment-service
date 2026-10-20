@@ -172,3 +172,28 @@ async def test_non_ascii_api_key_returns_401(client: AsyncClient) -> None:
     )
 
     assert response.status_code == 401
+
+
+async def test_private_webhook_url_is_rejected(
+    client: AsyncClient, auth_headers: dict[str, str], payment_body: dict[str, Any]
+) -> None:
+    response = await client.post(
+        URL,
+        json={**payment_body, "webhook_url": "http://10.0.0.1:9/hook"},
+        headers={**auth_headers, "Idempotency-Key": "k1"},
+    )
+
+    assert response.status_code == 422
+    assert "webhook_url" in response.json()["detail"]
+
+
+async def test_allowlisted_private_host_is_accepted(
+    client: AsyncClient, auth_headers: dict[str, str], payment_body: dict[str, Any]
+) -> None:
+    response = await client.post(
+        URL,
+        json={**payment_body, "webhook_url": "http://webhook-sink:8080/webhooks"},
+        headers={**auth_headers, "Idempotency-Key": "k1"},
+    )
+
+    assert response.status_code == 202

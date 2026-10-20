@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from typing import Protocol
 
 import httpx
@@ -14,16 +16,27 @@ class Notifier(Protocol):
     async def notify(self, payment: Payment) -> None: ...
 
 
+SIGNATURE_HEADER = "X-Webhook-Signature"
+
+
+def sign(secret: str, body: bytes) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
 class WebhookNotifier:
-    def __init__(self, client: httpx.AsyncClient, *, timeout_seconds: float) -> None:
+    """POST с JSON-телом и HMAC-SHA256 подписью тела в заголовке X-Webhook-Signature."""
+
+    def __init__(self, client: httpx.AsyncClient, *, secret: str, timeout_seconds: float) -> None:
         self._client = client
+        self._secret = secret
         self._timeout = timeout_seconds
 
     async def notify(self, payment: Payment) -> None:
-        payload = WebhookPayload.from_model(payment).model_dump(mode="json")
+        body = WebhookPayload.from_model(payment).model_dump_json().encode()
+        headers = {"Content-Type": "application/json", SIGNATURE_HEADER: sign(self._secret, body)}
         try:
             response = await self._client.post(
-                payment.webhook_url, json=payload, timeout=self._timeout
+                payment.webhook_url, content=body, headers=headers, timeout=self._timeout
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:

@@ -1,0 +1,48 @@
+import pytest
+from app.webhook_policy import WebhookUrlNotAllowedError, WebhookUrlPolicy
+
+RESOLVED = {
+    "shop.example.com": ["93.184.216.34"],
+    "internal.example.com": ["10.0.0.5"],
+    "dual.example.com": ["93.184.216.34", "192.168.1.1"],
+}
+
+
+async def fake_resolver(host: str) -> list[str]:
+    return RESOLVED.get(host, [])
+
+
+def policy(allowed_hosts: str = "") -> WebhookUrlPolicy:
+    return WebhookUrlPolicy(allowed_hosts, resolver=fake_resolver)
+
+
+async def test_public_host_is_allowed() -> None:
+    await policy().validate("https://shop.example.com/hook")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8080/hook",
+        "http://localhost/hook",
+        "http://10.1.2.3/hook",
+        "http://192.168.0.10/hook",
+        "http://169.254.169.254/latest/meta-data",
+        "http://[::1]/hook",
+        "http://internal.example.com/hook",
+        "http://dual.example.com/hook",
+    ],
+)
+async def test_private_and_loopback_targets_are_rejected(url: str) -> None:
+    with pytest.raises(WebhookUrlNotAllowedError):
+        await policy().validate(url)
+
+
+async def test_unresolvable_host_is_rejected() -> None:
+    with pytest.raises(WebhookUrlNotAllowedError):
+        await policy().validate("http://nope.example.com/hook")
+
+
+async def test_allowlisted_host_bypasses_network_check() -> None:
+    await policy("webhook-sink, internal.example.com").validate("http://webhook-sink:8080/hook")
+    await policy("webhook-sink, internal.example.com").validate("http://internal.example.com/x")
