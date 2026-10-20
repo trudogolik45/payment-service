@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Protocol
 from uuid import UUID
@@ -13,6 +14,7 @@ from app.broker import (
     PAYMENTS_EXCHANGE,
     create_broker,
     declare_topology,
+    retry_delay_seconds,
     retry_queue,
 )
 from app.config import Settings, get_settings
@@ -39,8 +41,9 @@ async def schedule_retry(
 ) -> None:
     """Кладёт событие в retry-очередь; по TTL оно вернётся в payments.new.
 
-    Если положить не удалось, сообщение возвращается в очередь как есть —
-    иначе сбой брокера отправил бы его в DLQ раньше времени.
+    Если положить не удалось, сообщение после паузы возвращается в очередь как
+    есть — иначе сбой брокера отправил бы его в DLQ раньше времени. Пауза
+    удерживает слот prefetch, зато не даёт сообщению крутиться без задержки.
     """
     try:
         await broker.publish(
@@ -51,6 +54,7 @@ async def schedule_retry(
         )
     except Exception as exc:
         log.exception("payment %s: retry publish failed, requeueing", event.payment_id)
+        await asyncio.sleep(retry_delay_seconds(attempt, settings))
         raise NackMessage(requeue=True) from exc
 
 

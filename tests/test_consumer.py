@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from typing import Any, cast
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -140,5 +141,7 @@ async def test_retry_publish_failure_requeues_instead_of_dead_lettering(
     broker = cast(RabbitBroker, BrokenBroker())
     event = PaymentCreatedEvent(payment_id=uuid4())
 
-    with pytest.raises(NackMessage):
+    with patch("app.consumer.asyncio.sleep", new=AsyncMock()) as sleep, pytest.raises(NackMessage):
         await schedule_retry(broker, event, attempt=1, settings=settings)
+
+    assert sleep.call_args.args[0] == retry_delay_seconds(1, settings)

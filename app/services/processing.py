@@ -25,10 +25,12 @@ class PaymentProcessor:
     через шлюз заново, а уже доставленный webhook не отправляется повторно.
 
     Каждый шаг выполняется под блокировкой строки (SELECT ... FOR UPDATE), поэтому
-    две одновременные доставки одного события выполняются последовательно и вторая
-    видит результат первой. Блокировка снимается при падении процесса — в отличие
-    от флага «в обработке» в БД. Цена: транзакция живёт, пока отвечает шлюз или
-    webhook, поэтому пул соединений consumer'а не меньше prefetch.
+    две одновременные доставки одного события выполняются последовательно, и вторая
+    видит результат первой. Объект перечитывается из БД на каждом шаге
+    (populate_existing): между шагами его могла изменить параллельная доставка.
+    Блокировка снимается при падении процесса — в отличие от флага «в обработке»
+    в БД. Цена: транзакция живёт, пока отвечает шлюз или webhook, поэтому пул
+    соединений consumer'а не меньше prefetch.
     """
 
     def __init__(
@@ -48,7 +50,9 @@ class PaymentProcessor:
 
     async def _locked_step(self, session: AsyncSession, payment_id: UUID, step: Step) -> None:
         async with session.begin():
-            payment = await session.get(Payment, payment_id, with_for_update=True)
+            payment = await session.get(
+                Payment, payment_id, with_for_update=True, populate_existing=True
+            )
             if payment is None:
                 raise PaymentNotFoundError(payment_id)
             await step(payment)

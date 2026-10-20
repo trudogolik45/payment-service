@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+import uvicorn
 from app.broker import (
     ATTEMPT_HEADER,
     DEAD_LETTER_QUEUE,
@@ -22,9 +23,13 @@ from app.broker import (
 )
 from app.config import Settings
 from app.consumer import build_consumer
+from app.models import PaymentStatus
+from faststream import TestApp
 from faststream.rabbit import TestRabbitBroker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from tools import webhook_sink
 
-from tests.conftest import API_KEY
+from tests.conftest import TEST_DATABASE_URL, base_settings, fetch_payment, insert_payment
 
 MANAGEMENT_URL = os.environ.get("TEST_RABBITMQ_MANAGEMENT_URL", "http://localhost:15672")
 RETRY_BASE_DELAY = 0.2
@@ -62,7 +67,7 @@ async def _wait_for_message(queue: Any) -> Any:
 
 @pytest.fixture
 async def integration_settings() -> AsyncIterator[Settings]:
-    base = Settings(api_key=API_KEY)
+    base = base_settings()
     vhost = f"test-{uuid4().hex[:8]}"
     async with httpx.AsyncClient(base_url=MANAGEMENT_URL, auth=("guest", "guest")) as api:
         try:
@@ -77,8 +82,9 @@ async def integration_settings() -> AsyncIterator[Settings]:
         yield base.model_copy(
             update={
                 "rabbitmq_url": base.rabbitmq_url.rstrip("/") + f"/{vhost}",
+                "database_url": TEST_DATABASE_URL,
                 "retry_base_delay_seconds": RETRY_BASE_DELAY,
-                "max_attempts": 3,
+                "gateway_success_rate": 1,
             }
         )
         (await api.delete(f"/api/vhosts/{vhost}")).raise_for_status()
@@ -138,3 +144,39 @@ async def test_successful_message_is_acked_and_dlq_stays_empty(
         assert await dlq.get(no_ack=True, fail=False, timeout=1) is None
         assert await main.get(no_ack=True, fail=False, timeout=1) is None
     assert len(processor.calls) == 1
+
+
+@pytest.fixture
+async def webhook_sink_url() -> AsyncIterator[str]:
+    """Демо-приёмник webhook'ов, поднятый в процессе тестов на свободном порту."""
+    config = uvicorn.Config(webhook_sink.app, host="127.0.0.1", port=0, log_level="warning")
+    server = uvicorn.Server(config)
+    serving = asyncio.create_task(server.serve())
+    await _wait_until(lambda: server.started)
+    port = server.servers[0].sockets[0].getsockname()[1]
+    webhook_sink.received.clear()
+    yield f"http://127.0.0.1:{port}/webhooks"
+    server.should_exit = True
+    await serving
+
+
+async def test_consumer_starts_and_processes_payment_end_to_end(
+    integration_settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    webhook_sink_url: str,
+) -> None:
+    """Хуки старта consumer'а, БД, шлюз и webhook — без подмен."""
+    payment = await insert_payment(session_factory, webhook_url=webhook_sink_url)
+    app = build_consumer(integration_settings)
+
+    async with TestRabbitBroker(app.broker, with_real=True), TestApp(app):
+        await _publish_new_payment(app, payment.id)
+
+        await _wait_until(lambda: len(webhook_sink.received) == 1)
+
+    stored = await fetch_payment(session_factory, payment)
+    assert stored.status is PaymentStatus.SUCCEEDED
+    assert stored.processed_at is not None
+    assert stored.webhook_delivered_at is not None
+    assert webhook_sink.received[0]["payment_id"] == str(payment.id)
+    assert webhook_sink.received[0]["event"] == "payment.succeeded"

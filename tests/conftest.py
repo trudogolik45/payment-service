@@ -20,9 +20,21 @@ from sqlalchemy.ext.asyncio import (
 )
 
 API_KEY = "test-api-key"
+
+
+def base_settings() -> Settings:
+    """Адреса инфраструктуры из .env, если он есть; остальное — тестовые значения."""
+    return Settings(
+        api_key=API_KEY,
+        gateway_min_delay_seconds=0,
+        gateway_max_delay_seconds=0,
+        retry_base_delay_seconds=2,
+        max_attempts=3,
+    )
+
+
 TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    Settings(api_key=API_KEY).database_url.rsplit("/", 1)[0] + "/payments_test",
+    "TEST_DATABASE_URL", base_settings().database_url.rsplit("/", 1)[0] + "/payments_test"
 )
 
 
@@ -65,15 +77,7 @@ async def _ensure_database_exists() -> None:
 
 @pytest.fixture(scope="session")
 def settings() -> Settings:
-    return Settings(
-        _env_file=None,
-        api_key=API_KEY,
-        database_url=TEST_DATABASE_URL,
-        gateway_min_delay_seconds=0,
-        gateway_max_delay_seconds=0,
-        retry_base_delay_seconds=2,
-        max_attempts=3,
-    )
+    return base_settings().model_copy(update={"database_url": TEST_DATABASE_URL})
 
 
 @pytest.fixture(scope="session")

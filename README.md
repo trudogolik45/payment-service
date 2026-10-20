@@ -72,13 +72,13 @@ docker compose up -d --build
 
 - API: http://localhost:8000, Swagger: http://localhost:8000/docs
 - RabbitMQ Management: http://localhost:15672 (guest / guest)
-- Postgres и RabbitMQ опубликованы только на `127.0.0.1`
+- Postgres, RabbitMQ и webhook-sink опубликованы только на `127.0.0.1`
 - Логи: `docker compose logs -f api outbox-relay consumer webhook-sink`
 - Остановить вместе с данными: `docker compose down -v`
 
 ## Примеры
 
-Ключ по умолчанию из `.env.example`: `dev-api-key`.
+Ключ из `.env.example`: `dev-api-key`.
 
 ### Создать платёж
 
@@ -169,7 +169,7 @@ docker compose logs -f consumer
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `API_KEY` | `dev-api-key` | Ключ для `X-API-Key` |
+| `API_KEY` | обязателен (`dev-api-key` в `.env.example`) | Ключ для `X-API-Key` |
 | `DATABASE_URL` | `postgresql+asyncpg://…@localhost:5432/payments` | Подключение к PostgreSQL |
 | `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | Подключение к RabbitMQ |
 | `GATEWAY_MIN_DELAY_SECONDS` / `GATEWAY_MAX_DELAY_SECONDS` | `2` / `5` | Задержка эмуляции шлюза |
@@ -191,9 +191,11 @@ docker compose logs -f consumer
   или запрет private/loopback-адресов после резолва.
 - **Подпись webhook.** Получатель не может проверить подлинность. Решение — HMAC-заголовок
   с общим секретом.
-- **Очистка `outbox`.** Опубликованные строки не удаляются; частичный индекс по
-  неопубликованным держит выборку быстрой, но таблица растёт. Нужен периодический
-  `DELETE … WHERE published_at < now() - interval '7 days'`.
+- **Очистка и карантин `outbox`.** Опубликованные строки не удаляются; частичный индекс
+  по неопубликованным держит выборку быстрой, но таблица растёт. Нужен периодический
+  `DELETE … WHERE published_at < now() - interval '7 days'`. Событие, которое не удаётся
+  опубликовать в принципе, остаётся в таблице и логируется на каждой итерации; в проде
+  нужен счётчик попыток и карантин.
 - **Лимит доставок при падении consumer'а.** Если процесс умирает посреди обработки,
   сообщение возвращается в очередь без увеличения `x-attempt`. Для classic queue лимита
   нет; защита — quorum queue с `x-delivery-limit`.
@@ -213,7 +215,8 @@ uv run mypy
 
 Тесты: unit (схемы, шлюз, webhook, retry-логика через `TestRabbitBroker`), с PostgreSQL
 (API, идемпотентность с конкурентными запросами, outbox relay, процессор с конкурентной
-доставкой) и с настоящим RabbitMQ (retry по TTL → DLQ с `x-death`).
+доставкой) и с настоящим RabbitMQ (retry по TTL → DLQ с `x-death`; сквозной запуск
+consumer'а через его хуки старта: БД → шлюз → webhook на локальный HTTP-сервер).
 
 Локальный запуск сервисов без Docker:
 
