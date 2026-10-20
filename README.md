@@ -217,6 +217,28 @@ docker compose logs -f consumer
 или `RETRY_BASE_DELAY_SECONDS` удалите старые очереди `payments.new.retry.*`, после
 смены типа или лимита `payments.new` — её саму (или `docker compose down -v`).
 
+## Соответствие ТЗ
+
+| Требование | Где реализовано | Чем проверено |
+|---|---|---|
+| Сущность Payment: id, сумма decimal, валюта RUB/USD/EUR, описание, метаданные JSON, статус pending/succeeded/failed, idempotency key, webhook URL, даты создания и обработки | `app/models.py`, миграция `alembic/versions/0001_*` | `alembic check`, `tests/test_api.py` |
+| `POST /api/v1/payments`, заголовок `Idempotency-Key` обязателен, ответ 202 с `payment_id`, статусом, `created_at` | `app/api/payments.py` | `tests/test_api.py` |
+| `GET /api/v1/payments/{payment_id}` с деталями | `app/api/payments.py`, `PaymentOut` | `tests/test_api.py` |
+| Публикация события в `payments.new` при создании | outbox-строка в той же транзакции (`app/services/payments.py`), `app/outbox_relay.py` | `tests/test_api.py`, `tests/test_outbox_relay.py` |
+| Один consumer: получает, эмулирует обработку 2–5 с / 90 % успех, обновляет статус, шлёт webhook, повторяет при ошибках отправки | `app/consumer.py`, `app/services/processing.py`, `app/gateway.py`, `app/webhook.py` | `tests/test_consumer.py`, `tests/test_processing.py`, `tests/test_gateway.py`, `tests/test_webhook.py`, сквозной тест в `tests/test_rabbitmq_integration.py` |
+| Outbox pattern | `app/outbox_relay.py` (FOR UPDATE SKIP LOCKED, publisher confirms, карантин) | `tests/test_outbox_relay.py` |
+| Idempotency key против дублей | `INSERT … ON CONFLICT DO NOTHING`, сравнение отпечатка тела → 409 | `tests/test_api.py` (включая конкурентные запросы) |
+| Retry: 3 попытки с экспоненциальной задержкой | retry-очереди с TTL 2 с и 4 с, заголовок `x-attempt` (`app/broker.py`, `app/consumer.py`) | `tests/test_consumer.py`, `tests/test_rabbitmq_integration.py` |
+| DLQ для сообщений, не обработанных после 3 попыток | `payments.dlx` → `payments.dlq`, плюс `x-delivery-limit` quorum-очереди | `tests/test_rabbitmq_integration.py` |
+| `X-API-Key` на всех эндпоинтах | `app/auth.py`, зависимость на роутере | `tests/test_api.py` |
+| FastAPI + Pydantic v2, SQLAlchemy 2.0 async, PostgreSQL, RabbitMQ (FastStream), Alembic, Docker + compose | `pyproject.toml`, `docker-compose.yml`, `Dockerfile` | `make check`, `docker compose up` |
+| README с запуском и примерами | этот файл | — |
+
+Два места, где реализация шире формулировки ТЗ: retry сделан через отдельные очереди
+с TTL (а не sleep в consumer'е), чтобы не держать слот prefetch и не терять сообщение при
+падении; эмулятор шлюза идемпотентен по `payment.id` в пределах процесса, как был бы
+настоящий шлюз.
+
 ## Разработка
 
 ```bash

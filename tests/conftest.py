@@ -1,4 +1,5 @@
 import os
+import uuid
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from typing import Any
@@ -35,8 +36,10 @@ def base_settings() -> Settings:
     )
 
 
+# Своя БД на каждый запуск pytest: параллельные прогоны (CI, ревью, IDE) не мешают друг другу.
 TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL", base_settings().database_url.rsplit("/", 1)[0] + "/payments_test"
+    "TEST_DATABASE_URL",
+    base_settings().database_url.rsplit("/", 1)[0] + f"/payments_test_{uuid.uuid4().hex[:8]}",
 )
 
 
@@ -58,23 +61,31 @@ def _downgrade(connection: Connection) -> None:
     command.downgrade(config, "base")
 
 
-async def _ensure_database_exists() -> None:
-    url = TEST_DATABASE_URL.rsplit("/", 1)[0] + "/postgres"
-    db_name = TEST_DATABASE_URL.rsplit("/", 1)[1]
-    engine = create_async_engine(url, isolation_level="AUTOCOMMIT")
+_ADMIN_URL = TEST_DATABASE_URL.rsplit("/", 1)[0] + "/postgres"
+_DB_NAME = TEST_DATABASE_URL.rsplit("/", 1)[1]
+
+
+async def _run_admin(statement: str) -> None:
+    engine = create_async_engine(_ADMIN_URL, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
-            exists = await conn.scalar(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": db_name}
-            )
-            if not exists:
-                await conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+            await conn.execute(text(statement))
     except OSError as exc:
         pytest.fail(
-            f"PostgreSQL недоступен по {url}: {exc}. Поднимите БД: `docker compose up -d postgres`."
+            f"PostgreSQL недоступен по {_ADMIN_URL}: {exc}. "
+            "Поднимите БД: `docker compose up -d postgres`."
         )
     finally:
         await engine.dispose()
+
+
+async def _create_database() -> None:
+    await _run_admin(f'DROP DATABASE IF EXISTS "{_DB_NAME}"')
+    await _run_admin(f'CREATE DATABASE "{_DB_NAME}"')
+
+
+async def _drop_database() -> None:
+    await _run_admin(f'DROP DATABASE IF EXISTS "{_DB_NAME}"')
 
 
 @pytest.fixture(scope="session")
@@ -84,15 +95,15 @@ def settings() -> Settings:
 
 @pytest.fixture(scope="session")
 async def engine() -> AsyncIterator[AsyncEngine]:
-    await _ensure_database_exists()
+    await _create_database()
     engine = create_async_engine(TEST_DATABASE_URL)
     async with engine.begin() as conn:
-        await conn.run_sync(_downgrade)
         await conn.run_sync(_upgrade)
     yield engine
     async with engine.begin() as conn:
         await conn.run_sync(_downgrade)
     await engine.dispose()
+    await _drop_database()
 
 
 @pytest.fixture
