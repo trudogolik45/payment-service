@@ -3,6 +3,8 @@
 Строки берутся под FOR UPDATE SKIP LOCKED, поэтому можно запускать
 несколько экземпляров. Гарантия — at-least-once: если публикация прошла,
 а commit нет, событие будет опубликовано повторно; consumer идемпотентен.
+Сбой публикации одного события не блокирует остальные: строка остаётся
+неопубликованной и будет взята снова на следующей итерации.
 """
 
 import asyncio
@@ -19,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.broker import NEW_PAYMENTS_QUEUE, PAYMENTS_EXCHANGE, create_broker, declare_topology
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
+from app.log_config import LOG_FORMAT
 from app.models import OutboxEvent
 from app.schemas import PAYMENT_CREATED
 
@@ -44,19 +47,25 @@ class OutboxRelay:
         self._poll_interval = poll_interval_seconds
 
     async def relay_once(self) -> int:
-        """Публикует одну пачку неопубликованных событий. Возвращает их количество."""
+        """Публикует одну пачку неопубликованных событий. Возвращает число опубликованных."""
         async with self._session_factory() as session, session.begin():
             events: list[OutboxEvent] = list(await session.scalars(self._pending_batch()))
-            for event in events:
-                await self._publish(event)
-                event.published_at = datetime.now(UTC)
-            return len(events)
+            return sum([await self._publish_one(event) for event in events])
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             published = await self._relay_safely()
             if published < self._batch_size:
                 await self._sleep(stop)
+
+    async def _publish_one(self, event: OutboxEvent) -> bool:
+        try:
+            await self._publish(event)
+        except Exception:
+            log.exception("outbox event %d publish failed, will retry", event.id)
+            return False
+        event.published_at = datetime.now(UTC)
+        return True
 
     async def _relay_safely(self) -> int:
         try:
@@ -111,13 +120,12 @@ async def main(settings: Settings) -> None:
         )
         log.info("outbox relay started")
         await relay.run(stop)
+        log.info("outbox relay stopped")
     finally:
         await broker.stop()
         await engine.dispose()
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     asyncio.run(main(get_settings()))

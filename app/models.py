@@ -49,7 +49,7 @@ class Payment(Base):
     description: Mapped[str] = mapped_column(Text)
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
     status: Mapped[PaymentStatus] = mapped_column(
-        _enum(PaymentStatus, "payment_status"), default=PaymentStatus.PENDING, index=True
+        _enum(PaymentStatus, "payment_status"), default=PaymentStatus.PENDING
     )
     idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
     request_hash: Mapped[str] = mapped_column(String(64))

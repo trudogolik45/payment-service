@@ -4,6 +4,7 @@ from uuid import UUID
 
 import httpx
 from faststream import Context, FastStream
+from faststream.exceptions import NackMessage
 from faststream.rabbit import Channel, RabbitBroker, RabbitMessage
 
 from app.broker import (
@@ -17,7 +18,7 @@ from app.broker import (
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
 from app.gateway import SimulatedGateway
-from app.logging import LOG_FORMAT
+from app.log_config import LOG_FORMAT
 from app.schemas import PaymentCreatedEvent
 from app.services.processing import PaymentNotFoundError, PaymentProcessor
 from app.webhook import WebhookNotifier
@@ -31,6 +32,26 @@ class Processor(Protocol):
 
 def read_attempt(msg: RabbitMessage) -> int:
     return int(msg.headers.get(ATTEMPT_HEADER, 1))
+
+
+async def schedule_retry(
+    broker: RabbitBroker, event: PaymentCreatedEvent, attempt: int, settings: Settings
+) -> None:
+    """Кладёт событие в retry-очередь; по TTL оно вернётся в payments.new.
+
+    Если положить не удалось, сообщение возвращается в очередь как есть —
+    иначе сбой брокера отправил бы его в DLQ раньше времени.
+    """
+    try:
+        await broker.publish(
+            event,
+            queue=retry_queue(attempt, settings).name,
+            headers={ATTEMPT_HEADER: attempt + 1},
+            persist=True,
+        )
+    except Exception as exc:
+        log.exception("payment %s: retry publish failed, requeueing", event.payment_id)
+        raise NackMessage(requeue=True) from exc
 
 
 def register_handlers(broker: RabbitBroker, settings: Settings) -> None:
@@ -59,12 +80,7 @@ def register_handlers(broker: RabbitBroker, settings: Settings) -> None:
                 )
                 raise
             log.warning("payment %s attempt %d failed, scheduling retry", event.payment_id, attempt)
-            await broker.publish(
-                event,
-                queue=retry_queue(attempt, settings).name,
-                headers={ATTEMPT_HEADER: attempt + 1},
-                persist=True,
-            )
+            await schedule_retry(broker, event, attempt, settings)
 
 
 def build_consumer(settings: Settings) -> FastStream:
@@ -74,7 +90,10 @@ def build_consumer(settings: Settings) -> FastStream:
 
     @app.on_startup
     async def startup() -> None:
-        engine = create_engine(settings.database_url)
+        await broker.connect()
+        await declare_topology(broker, settings)
+
+        engine = create_engine(settings.database_url, pool_size=settings.consumer_prefetch_count)
         http_client = httpx.AsyncClient()
         processor = PaymentProcessor(
             create_session_factory(engine),
@@ -89,10 +108,6 @@ def build_consumer(settings: Settings) -> FastStream:
         app.context.set_global("engine", engine)
         app.context.set_global("http_client", http_client)
 
-    @app.after_startup
-    async def declare() -> None:
-        await declare_topology(broker, settings)
-
     @app.on_shutdown
     async def shutdown() -> None:
         await app.context.get("http_client").aclose()
@@ -101,5 +116,7 @@ def build_consumer(settings: Settings) -> FastStream:
     return app
 
 
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-app = build_consumer(get_settings())
+def app_factory() -> FastStream:
+    """Точка входа: faststream run app.consumer:app_factory --factory."""
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    return build_consumer(get_settings())

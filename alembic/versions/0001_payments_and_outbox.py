@@ -47,7 +47,6 @@ def upgrade() -> None:
         sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("webhook_delivered_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index("ix_payments_status", "payments", ["status"])
 
     op.create_table(
         "outbox",

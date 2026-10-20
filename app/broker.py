@@ -5,7 +5,7 @@ payments (direct) --payments.new--> [payments.new] --reject--> payments.dlx (fan
           [payments.new.retry.N] --TTL----+   (повтор с задержкой base * 2^(N-1))
 """  # noqa: E501
 
-from faststream.rabbit import ExchangeType, RabbitBroker, RabbitExchange, RabbitQueue
+from faststream.rabbit import Channel, ExchangeType, RabbitBroker, RabbitExchange, RabbitQueue
 
 from app.config import Settings
 
@@ -45,7 +45,11 @@ def retry_queue(attempt: int, settings: Settings) -> RabbitQueue:
 
 
 def create_broker(settings: Settings) -> RabbitBroker:
-    return RabbitBroker(settings.rabbitmq_url)
+    """Брокер с publisher confirms; сообщение без маршрута — ошибка, а не тихая потеря."""
+    return RabbitBroker(
+        settings.rabbitmq_url,
+        default_channel=Channel(publisher_confirms=True, on_return_raises=True),
+    )
 
 
 async def declare_topology(broker: RabbitBroker, settings: Settings) -> None:

@@ -18,12 +18,16 @@ Alembic, Docker Compose.
                  exchange payments ──payments.new──▶ queue payments.new
                         ▲                                   │
                         │ TTL истёк                         ▼ consumer
-         queue payments.new.retry.N ◀── ошибка ──── шлюз (2–5 с, 90 % успех)
-                                       попытка < 3   │  → status в БД → webhook
-                                                     │
-                                      ошибка на 3-й попытке (reject)
-                                                     ▼
+         queue payments.new.retry.N ◀── сбой ───── шлюз (2–5 с, 90 % успех)
+                                     попытка < 3   │  → status в БД → webhook
+                                                   │
+                                    сбой на 3-й попытке (reject)
+                                                   ▼
                  exchange payments.dlx (fanout) ──▶ queue payments.dlq
+
+«Сбой» — исключение в обработке (webhook не доставлен, БД недоступна).
+Отказ шлюза (10 %) — это бизнес-результат: платёж получает статус failed,
+webhook уходит, retry не нужен.
 ```
 
 | Сервис | Что делает |
@@ -43,12 +47,16 @@ Alembic, Docker Compose.
 - **Идемпотентность API.** `Idempotency-Key` уникален в БД (`INSERT … ON CONFLICT DO NOTHING`).
   Повтор с тем же ключом и телом возвращает тот же платёж без нового события. Тот же ключ
   с другим телом — `409 Conflict`.
-- **Идемпотентность consumer'а.** Уже проведённый платёж не отправляется в шлюз повторно,
-  уже доставленный webhook не шлётся второй раз (`processed_at`, `webhook_delivered_at`).
-- **Retry.** Всего `MAX_ATTEMPTS` = 3 попытки. После неудачной попытки `n` сообщение
-  уходит в `payments.new.retry.n` с TTL = `RETRY_BASE_DELAY_SECONDS × 2^(n−1)`
-  (2 с, 4 с) и по истечении TTL возвращается в `payments.new` с заголовком `x-attempt`.
-  Отдельная очередь на каждую задержку — чтобы не было head-of-line blocking.
+- **Идемпотентность consumer'а.** Платёж со статусом не `pending` не отправляется в шлюз
+  повторно, уже доставленный webhook (`webhook_delivered_at`) не шлётся второй раз.
+  Каждый шаг идёт под `SELECT … FOR UPDATE`, поэтому две одновременные доставки одного
+  события выполняются последовательно, и вторая видит результат первой.
+- **Retry.** Всего `MAX_ATTEMPTS` = 3 попытки обработки (первая + два повтора). После
+  неудачной попытки `n` сообщение уходит в `payments.new.retry.n` с TTL =
+  `RETRY_BASE_DELAY_SECONDS × 2^(n−1)` (2 с, 4 с) и по истечении TTL возвращается
+  в `payments.new` с заголовком `x-attempt`. Отдельная очередь на каждую задержку —
+  чтобы не было head-of-line blocking. Если положить сообщение в retry-очередь не
+  удалось, оно возвращается в `payments.new` как есть (nack + requeue), а не в DLQ.
 - **Dead Letter Queue.** После последней неудачной попытки (или если платёж из сообщения
   не найден в БД) сообщение отклоняется, и RabbitMQ через `x-dead-letter-exchange`
   переносит его в `payments.dlq`. В заголовке `x-death` — история.
@@ -58,12 +66,13 @@ Alembic, Docker Compose.
 ## Запуск
 
 ```bash
-cp .env.example .env        # необязательно: поменять API_KEY и порты
+cp .env.example .env        # задать API_KEY, при необходимости поменять порты
 docker compose up -d --build
 ```
 
 - API: http://localhost:8000, Swagger: http://localhost:8000/docs
 - RabbitMQ Management: http://localhost:15672 (guest / guest)
+- Postgres и RabbitMQ опубликованы только на `127.0.0.1`
 - Логи: `docker compose logs -f api outbox-relay consumer webhook-sink`
 - Остановить вместе с данными: `docker compose down -v`
 
@@ -175,17 +184,45 @@ docker compose logs -f consumer
 Аргументы очередей (TTL retry-очередей) фиксируются при первом объявлении: после смены
 `MAX_ATTEMPTS` или `RETRY_BASE_DELAY_SECONDS` удалите старые очереди `payments.new.retry.*`.
 
+## Что осознанно не сделано
+
+- **Фильтр SSRF для `webhook_url`.** Принимается любой http(s)-адрес, в том числе внутри
+  docker-сети — демо этим и пользуется (`webhook-sink`). В проде нужен allowlist хостов
+  или запрет private/loopback-адресов после резолва.
+- **Подпись webhook.** Получатель не может проверить подлинность. Решение — HMAC-заголовок
+  с общим секретом.
+- **Очистка `outbox`.** Опубликованные строки не удаляются; частичный индекс по
+  неопубликованным держит выборку быстрой, но таблица растёт. Нужен периодический
+  `DELETE … WHERE published_at < now() - interval '7 days'`.
+- **Лимит доставок при падении consumer'а.** Если процесс умирает посреди обработки,
+  сообщение возвращается в очередь без увеличения `x-attempt`. Для classic queue лимита
+  нет; защита — quorum queue с `x-delivery-limit`.
+
 ## Разработка
 
 ```bash
-uv sync                          # зависимости (включая dev)
-docker compose up -d postgres    # тестам нужен PostgreSQL
-uv run pytest                    # тесты (БД payments_test создаётся автоматически)
+uv sync                                  # зависимости (включая dev)
+docker compose up -d postgres rabbitmq   # тестам нужны PostgreSQL и RabbitMQ
+uv run pytest                            # БД payments_test и vhost в RabbitMQ создаются сами
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
 ```
 
-Или одной командой: `make check`.
+Или одной командой: `make check`. `.env` для тестов не обязателен: адреса берутся из него,
+если он есть, иначе — `localhost:5432` и `localhost:5672`.
+
+Тесты: unit (схемы, шлюз, webhook, retry-логика через `TestRabbitBroker`), с PostgreSQL
+(API, идемпотентность с конкурентными запросами, outbox relay, процессор с конкурентной
+доставкой) и с настоящим RabbitMQ (retry по TTL → DLQ с `x-death`).
+
+Локальный запуск сервисов без Docker:
+
+```bash
+uv run alembic upgrade head
+uv run uvicorn app.main:app_factory --factory --reload
+uv run python -m app.outbox_relay
+uv run faststream run app.consumer:app_factory --factory
+```
 
 Миграции: `uv run alembic upgrade head`, новая миграция —
 `uv run alembic revision --autogenerate -m "..."`.

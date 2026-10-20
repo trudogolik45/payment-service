@@ -1,12 +1,14 @@
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 from app.broker import NEW_PAYMENTS_QUEUE, PAYMENTS_EXCHANGE, retry_delay_seconds, retry_queue
 from app.config import Settings
-from app.consumer import build_consumer
+from app.consumer import build_consumer, schedule_retry
+from app.schemas import PaymentCreatedEvent
 from app.services.processing import PaymentNotFoundError
+from faststream.exceptions import NackMessage
 from faststream.rabbit import RabbitBroker, RabbitMessage, RabbitQueue, TestRabbitBroker
 
 
@@ -126,3 +128,17 @@ async def test_unknown_payment_is_rejected_without_retry(make_harness: Any) -> N
             await harness.publish_new_payment(uuid4())
 
         assert harness.retried == []
+
+
+async def test_retry_publish_failure_requeues_instead_of_dead_lettering(
+    settings: Settings,
+) -> None:
+    class BrokenBroker:
+        async def publish(self, *args: Any, **kwargs: Any) -> None:
+            raise ConnectionError("broker down")
+
+    broker = cast(RabbitBroker, BrokenBroker())
+    event = PaymentCreatedEvent(payment_id=uuid4())
+
+    with pytest.raises(NackMessage):
+        await schedule_retry(broker, event, attempt=1, settings=settings)

@@ -19,6 +19,12 @@ def test_valid_body_parses_amount_as_decimal() -> None:
     assert payment.metadata == {}
 
 
+def test_amount_is_normalized_to_two_decimal_places() -> None:
+    payment = PaymentCreate.model_validate({**VALID, "amount": "100.5"})
+
+    assert str(payment.amount) == "100.50"
+
+
 @pytest.mark.parametrize("amount", ["0", "-1", "1.234", "abc"])
 def test_rejects_invalid_amount(amount: str) -> None:
     with pytest.raises(ValidationError):

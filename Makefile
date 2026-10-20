@@ -9,8 +9,8 @@ down:          ## Остановить и удалить контейнеры и
 logs:
 	docker compose logs -f api outbox-relay consumer webhook-sink
 
-test:          ## Тесты (нужен Postgres: make up или docker compose up -d postgres)
-	docker compose up -d postgres
+test:          ## Тесты (нужны Postgres и RabbitMQ)
+	docker compose up -d postgres rabbitmq
 	uv run pytest
 
 lint:

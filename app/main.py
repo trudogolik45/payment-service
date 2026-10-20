@@ -27,4 +27,6 @@ def create_app(settings: Settings) -> FastAPI:
     return app
 
 
-app = create_app(get_settings())
+def app_factory() -> FastAPI:
+    """Точка входа: uvicorn app.main:app_factory --factory."""
+    return create_app(get_settings())

@@ -1,6 +1,5 @@
 from typing import Any
 
-import pytest
 from app.models import OutboxEvent
 from app.outbox_relay import OutboxRelay
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -62,11 +61,27 @@ async def test_relay_keeps_event_unpublished_when_publish_fails(
 
     relay = OutboxRelay(session_factory, publisher, batch_size=10, poll_interval_seconds=0)
 
-    with pytest.raises(ConnectionError):
-        await relay.relay_once()
+    assert await relay.relay_once() == 0
 
     events = await fetch_outbox(session_factory)
     assert events[0].published_at is None
+
+
+async def test_poison_event_does_not_block_the_rest_of_the_batch(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _add_events(session_factory, 3)
+
+    async def publisher(event: OutboxEvent) -> None:
+        if event.payload["payment_id"] == "1":
+            raise KeyError("unknown event type")
+
+    relay = OutboxRelay(session_factory, publisher, batch_size=10, poll_interval_seconds=0)
+
+    assert await relay.relay_once() == 2
+
+    published = [e.published_at is not None for e in await fetch_outbox(session_factory)]
+    assert published == [True, False, True]
 
 
 async def test_relay_respects_batch_size(

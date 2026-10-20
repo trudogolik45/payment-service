@@ -11,7 +11,7 @@ from app.dependencies import get_session_factory
 from app.main import create_app
 from app.models import Currency, OutboxEvent, Payment, PaymentStatus
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -19,10 +19,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL", Settings().database_url.rsplit("/", 1)[0] + "/payments_test"
-)
 API_KEY = "test-api-key"
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    Settings(api_key=API_KEY).database_url.rsplit("/", 1)[0] + "/payments_test",
+)
 
 
 def _alembic_config() -> Config:
@@ -156,6 +157,4 @@ async def fetch_payment(
 
 async def fetch_outbox(session_factory: async_sessionmaker[AsyncSession]) -> list[OutboxEvent]:
     async with session_factory() as session:
-        result = await session.scalars(text("SELECT id FROM outbox ORDER BY id"))
-        ids = list(result)
-        return [e for e in [await session.get(OutboxEvent, i) for i in ids] if e is not None]
+        return list(await session.scalars(select(OutboxEvent).order_by(OutboxEvent.id)))

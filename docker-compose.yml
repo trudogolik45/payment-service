@@ -4,7 +4,7 @@ x-app: &app
     - path: .env
       required: false
   environment:
-    API_KEY: ${API_KEY:-dev-api-key}
+    API_KEY: ${API_KEY:?API_KEY не задан — скопируйте .env.example в .env}
     DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments
     RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
   restart: unless-stopped
@@ -17,7 +17,7 @@ services:
       POSTGRES_PASSWORD: payments
       POSTGRES_DB: payments
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -29,8 +29,10 @@ services:
   rabbitmq:
     image: rabbitmq:4-management-alpine
     ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
@@ -47,6 +49,7 @@ services:
 
   api:
     <<: *app
+    command: ["uvicorn", "app.main:app_factory", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -64,7 +67,7 @@ services:
 
   consumer:
     <<: *app
-    command: ["faststream", "run", "app.consumer:app"]
+    command: ["faststream", "run", "app.consumer:app_factory", "--factory"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -79,3 +82,4 @@ services:
 
 volumes:
   postgres-data:
+  rabbitmq-data:

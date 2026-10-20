@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from app.models import Currency, Payment, PaymentStatus
 
@@ -18,6 +18,12 @@ class PaymentCreate(BaseModel):
     description: str = Field(min_length=1, max_length=1000)
     metadata: dict[str, Any] = Field(default_factory=dict)
     webhook_url: HttpUrl
+
+    @field_validator("amount", mode="after")
+    @classmethod
+    def normalize_amount(cls, amount: Decimal) -> Decimal:
+        """100.5 и 100.50 — одна сумма: иначе повтор с другим форматом даст ложный 409."""
+        return amount.quantize(Decimal("0.01"))
 
 
 class PaymentAccepted(BaseModel):
@@ -64,6 +70,10 @@ class PaymentCreatedEvent(BaseModel):
     """Сообщение в очереди payments.new."""
 
     payment_id: UUID
+
+    @classmethod
+    def from_model(cls, payment: Payment) -> "PaymentCreatedEvent":
+        return cls(payment_id=payment.id)
 
 
 class WebhookPayload(BaseModel):

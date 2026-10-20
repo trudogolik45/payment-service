@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import OutboxEvent, Payment
-from app.schemas import PAYMENT_CREATED, PaymentCreate
+from app.schemas import PAYMENT_CREATED, PaymentCreate, PaymentCreatedEvent
 
 
 class IdempotencyConflictError(Exception):
@@ -34,7 +34,10 @@ class PaymentService:
             payment = await self._insert_if_absent(data, idempotency_key, fingerprint)
             if payment is not None:
                 self._session.add(
-                    OutboxEvent(event_type=PAYMENT_CREATED, payload={"payment_id": str(payment.id)})
+                    OutboxEvent(
+                        event_type=PAYMENT_CREATED,
+                        payload=PaymentCreatedEvent.from_model(payment).model_dump(mode="json"),
+                    )
                 )
                 return payment
 

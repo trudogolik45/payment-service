@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -10,6 +11,8 @@ from app.webhook import Notifier
 
 log = logging.getLogger(__name__)
 
+Step = Callable[[Payment], Awaitable[None]]
+
 
 class PaymentNotFoundError(Exception):
     """Платёж из сообщения отсутствует в БД — повторять обработку бессмысленно."""
@@ -20,6 +23,12 @@ class PaymentProcessor:
 
     Идемпотентен: при повторной доставке уже обработанный платёж не проводится
     через шлюз заново, а уже доставленный webhook не отправляется повторно.
+
+    Каждый шаг выполняется под блокировкой строки (SELECT ... FOR UPDATE), поэтому
+    две одновременные доставки одного события выполняются последовательно и вторая
+    видит результат первой. Блокировка снимается при падении процесса — в отличие
+    от флага «в обработке» в БД. Цена: транзакция живёт, пока отвечает шлюз или
+    webhook, поэтому пул соединений consumer'а не меньше prefetch.
     """
 
     def __init__(
@@ -34,22 +43,26 @@ class PaymentProcessor:
 
     async def process(self, payment_id: UUID) -> None:
         async with self._session_factory() as session:
-            payment = await session.get(Payment, payment_id)
+            await self._locked_step(session, payment_id, self._charge_if_pending)
+            await self._locked_step(session, payment_id, self._notify_if_not_delivered)
+
+    async def _locked_step(self, session: AsyncSession, payment_id: UUID, step: Step) -> None:
+        async with session.begin():
+            payment = await session.get(Payment, payment_id, with_for_update=True)
             if payment is None:
                 raise PaymentNotFoundError(payment_id)
-            if payment.status is PaymentStatus.PENDING:
-                await self._charge(session, payment)
-            if payment.webhook_delivered_at is None:
-                await self._notify(session, payment)
+            await step(payment)
 
-    async def _charge(self, session: AsyncSession, payment: Payment) -> None:
+    async def _charge_if_pending(self, payment: Payment) -> None:
+        if payment.status is not PaymentStatus.PENDING:
+            return
         payment.status = await self._gateway.charge()
         payment.processed_at = datetime.now(UTC)
-        await session.commit()
         log.info("payment %s processed: %s", payment.id, payment.status.value)
 
-    async def _notify(self, session: AsyncSession, payment: Payment) -> None:
+    async def _notify_if_not_delivered(self, payment: Payment) -> None:
+        if payment.webhook_delivered_at is not None:
+            return
         await self._notifier.notify(payment)
         payment.webhook_delivered_at = datetime.now(UTC)
-        await session.commit()
         log.info("payment %s webhook delivered to %s", payment.id, payment.webhook_url)

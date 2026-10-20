@@ -1,3 +1,4 @@
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -10,12 +11,14 @@ from tests.conftest import fetch_payment, insert_payment
 
 
 class StubGateway:
-    def __init__(self, result: PaymentStatus) -> None:
+    def __init__(self, result: PaymentStatus, delay: float = 0) -> None:
         self.result = result
+        self.delay = delay
         self.calls = 0
 
     async def charge(self) -> PaymentStatus:
         self.calls += 1
+        await asyncio.sleep(self.delay)
         return self.result
 
 
@@ -115,3 +118,16 @@ async def test_unknown_payment_raises_not_found(
 
     with pytest.raises(PaymentNotFoundError):
         await processor.process(uuid4())
+
+
+async def test_concurrent_duplicate_deliveries_process_payment_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    payment = await insert_payment(session_factory)
+    gateway, notifier = StubGateway(PaymentStatus.SUCCEEDED, delay=0.2), StubNotifier()
+    processor = PaymentProcessor(session_factory, gateway, notifier)
+
+    await asyncio.gather(processor.process(payment.id), processor.process(payment.id))
+
+    assert gateway.calls == 1
+    assert len(notifier.notified) == 1

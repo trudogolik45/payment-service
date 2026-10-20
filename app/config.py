@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     outbox_poll_interval_seconds: float = Field(default=0.5, gt=0)
     outbox_batch_size: int = Field(default=100, ge=1)
     consumer_prefetch_count: int = Field(default=10, ge=1)
+
+    @model_validator(mode="after")
+    def check_gateway_delays(self) -> "Settings":
+        if self.gateway_min_delay_seconds > self.gateway_max_delay_seconds:
+            raise ValueError("GATEWAY_MIN_DELAY_SECONDS must not exceed GATEWAY_MAX_DELAY_SECONDS")
+        return self
 
 
 @lru_cache

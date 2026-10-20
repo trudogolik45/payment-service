@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from typing import Any
 
@@ -135,3 +136,39 @@ async def test_health_is_public(client: AsyncClient) -> None:
     response = await client.get("/health")
 
     assert response.status_code == 200
+
+
+async def test_concurrent_requests_with_same_key_create_one_payment(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    payment_body: dict[str, Any],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    headers = {**auth_headers, "Idempotency-Key": "k1"}
+
+    responses = await asyncio.gather(
+        *(client.post(URL, json=payment_body, headers=headers) for _ in range(5))
+    )
+
+    assert {r.status_code for r in responses} == {202}
+    assert len({r.json()["payment_id"] for r in responses}) == 1
+    assert len(await fetch_outbox(session_factory)) == 1
+
+
+async def test_equivalent_amount_formatting_is_not_a_conflict(
+    client: AsyncClient, auth_headers: dict[str, str], payment_body: dict[str, Any]
+) -> None:
+    headers = {**auth_headers, "Idempotency-Key": "k1"}
+    await client.post(URL, json={**payment_body, "amount": "100.5"}, headers=headers)
+
+    response = await client.post(URL, json={**payment_body, "amount": "100.50"}, headers=headers)
+
+    assert response.status_code == 202
+
+
+async def test_non_ascii_api_key_returns_401(client: AsyncClient) -> None:
+    response = await client.get(
+        f"{URL}/{uuid.uuid4()}", headers={b"X-API-Key": "clé".encode("latin-1")}
+    )
+
+    assert response.status_code == 401

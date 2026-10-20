@@ -11,5 +11,5 @@ def require_api_key(
     request: Request, api_key: Annotated[str | None, Depends(api_key_header)]
 ) -> None:
     expected: str = request.app.state.settings.api_key
-    if api_key is None or not secrets.compare_digest(api_key, expected):
+    if api_key is None or not secrets.compare_digest(api_key.encode(), expected.encode()):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing X-API-Key")

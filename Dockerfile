@@ -8,6 +8,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
+RUN useradd --create-home --uid 1000 app
 WORKDIR /app
 
 COPY pyproject.toml uv.lock .python-version ./
@@ -18,4 +19,5 @@ COPY alembic ./alembic
 COPY app ./app
 COPY tools ./tools
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+USER app
+CMD ["uvicorn", "app.main:app_factory", "--factory", "--host", "0.0.0.0", "--port", "8000"]
