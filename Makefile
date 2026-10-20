@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint typecheck check migrate
+.PHONY: up down logs test lint typecheck migrations-check check
 
 up:            ## Поднять всё окружение
 	docker compose up -d --build
@@ -20,4 +20,8 @@ lint:
 typecheck:
 	uv run mypy
 
-check: lint typecheck test
+migrations-check: ## Модели и миграции совпадают (на одноразовой БД)
+	docker compose up -d postgres
+	uv run python -m tests.migrations_check
+
+check: lint typecheck test migrations-check

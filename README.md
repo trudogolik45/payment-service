@@ -221,7 +221,7 @@ docker compose logs -f consumer
 
 | Требование | Где реализовано | Чем проверено |
 |---|---|---|
-| Сущность Payment: id, сумма decimal, валюта RUB/USD/EUR, описание, метаданные JSON, статус pending/succeeded/failed, idempotency key, webhook URL, даты создания и обработки | `app/models.py`, миграция `alembic/versions/0001_*` | `alembic check`, `tests/test_api.py` |
+| Сущность Payment: id, сумма decimal, валюта RUB/USD/EUR, описание, метаданные JSON, статус pending/succeeded/failed, idempotency key, webhook URL, даты создания и обработки | `app/models.py`, миграция `alembic/versions/0001_*` | `make migrations-check` (`alembic check`), `tests/test_api.py` |
 | `POST /api/v1/payments`, заголовок `Idempotency-Key` обязателен, ответ 202 с `payment_id`, статусом, `created_at` | `app/api/payments.py` | `tests/test_api.py` |
 | `GET /api/v1/payments/{payment_id}` с деталями | `app/api/payments.py`, `PaymentOut` | `tests/test_api.py` |
 | Публикация события в `payments.new` при создании | outbox-строка в той же транзакции (`app/services/payments.py`), `app/outbox_relay.py` | `tests/test_api.py`, `tests/test_outbox_relay.py` |
@@ -244,12 +244,12 @@ docker compose logs -f consumer
 ```bash
 uv sync                                  # зависимости (включая dev)
 docker compose up -d postgres rabbitmq   # тестам нужны PostgreSQL и RabbitMQ
-uv run pytest                            # БД payments_test и vhost в RabbitMQ создаются сами
+uv run pytest                            # БД payments_test_<id> и vhost в RabbitMQ создаются и удаляются сами
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
 ```
 
-Или одной командой: `make check`. `.env` для тестов не обязателен: адреса берутся из него,
+Или одной командой: `make check` (включает `alembic check` на свежей БД). `.env` для тестов не обязателен: адреса берутся из него,
 если он есть, иначе — `localhost:5432` и `localhost:5672`.
 
 Тесты: unit (схемы, шлюз, webhook, retry-логика через `TestRabbitBroker`), с PostgreSQL

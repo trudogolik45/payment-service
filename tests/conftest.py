@@ -63,6 +63,11 @@ def _downgrade(connection: Connection) -> None:
 
 _ADMIN_URL = TEST_DATABASE_URL.rsplit("/", 1)[0] + "/postgres"
 _DB_NAME = TEST_DATABASE_URL.rsplit("/", 1)[1]
+if not _DB_NAME.startswith("payments_test"):
+    raise RuntimeError(
+        f"TEST_DATABASE_URL указывает на {_DB_NAME!r}: тесты создают и удаляют БД целиком, "
+        "имя должно начинаться с payments_test"
+    )
 
 
 async def _run_admin(statement: str) -> None:
@@ -80,12 +85,11 @@ async def _run_admin(statement: str) -> None:
 
 
 async def _create_database() -> None:
-    await _run_admin(f'DROP DATABASE IF EXISTS "{_DB_NAME}"')
     await _run_admin(f'CREATE DATABASE "{_DB_NAME}"')
 
 
 async def _drop_database() -> None:
-    await _run_admin(f'DROP DATABASE IF EXISTS "{_DB_NAME}"')
+    await _run_admin(f'DROP DATABASE IF EXISTS "{_DB_NAME}" WITH (FORCE)')
 
 
 @pytest.fixture(scope="session")
@@ -97,13 +101,15 @@ def settings() -> Settings:
 async def engine() -> AsyncIterator[AsyncEngine]:
     await _create_database()
     engine = create_async_engine(TEST_DATABASE_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(_upgrade)
-    yield engine
-    async with engine.begin() as conn:
-        await conn.run_sync(_downgrade)
-    await engine.dispose()
-    await _drop_database()
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(_upgrade)
+        yield engine
+        async with engine.begin() as conn:
+            await conn.run_sync(_downgrade)
+    finally:
+        await engine.dispose()
+        await _drop_database()
 
 
 @pytest.fixture
