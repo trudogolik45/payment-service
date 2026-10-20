@@ -18,8 +18,12 @@ def policy(allowed_hosts: str = "") -> WebhookUrlPolicy:
     return WebhookUrlPolicy(allowed_hosts, resolver=fake_resolver)
 
 
-async def test_public_host_is_allowed() -> None:
-    await policy().validate("https://shop.example.com/hook")
+async def test_public_host_is_allowed_and_returns_addresses() -> None:
+    assert await policy().validate("https://shop.example.com/hook") == ["93.184.216.34"]
+
+
+async def test_allowlisted_host_returns_no_addresses_to_pin() -> None:
+    assert await policy("webhook-sink").validate("http://webhook-sink/hook") == []
 
 
 @pytest.mark.parametrize(
@@ -31,6 +35,9 @@ async def test_public_host_is_allowed() -> None:
         "http://192.168.0.10/hook",
         "http://169.254.169.254/latest/meta-data",
         "http://[::1]/hook",
+        "http://[::ffff:10.0.0.1]/hook",
+        "http://[64:ff9b::a00:1]/hook",
+        "http://[2002:a00:1::1]/hook",
         "http://internal.example.com/hook",
         "http://dual.example.com/hook",
     ],

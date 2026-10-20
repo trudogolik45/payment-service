@@ -1,22 +1,37 @@
 """Топология RabbitMQ.
 
 payments (direct) --payments.new--> [payments.new] --reject--> payments.dlx (fanout) --> [payments.dlq]
-                                          ^
+                                          ^        (quorum, x-delivery-limit)
           [payments.new.retry.N] --TTL----+   (повтор с задержкой base * 2^(N-1))
 """  # noqa: E501
 
-from faststream.rabbit import Channel, ExchangeType, RabbitBroker, RabbitExchange, RabbitQueue
+from faststream.rabbit import (
+    Channel,
+    ExchangeType,
+    QueueType,
+    RabbitBroker,
+    RabbitExchange,
+    RabbitQueue,
+)
 
 from app.config import Settings
 
 PAYMENTS_EXCHANGE = RabbitExchange("payments", type=ExchangeType.DIRECT, durable=True)
 DEAD_LETTER_EXCHANGE = RabbitExchange("payments.dlx", type=ExchangeType.FANOUT, durable=True)
 
+# Сколько раз сообщение может вернуться в очередь без ack (падение consumer'а посреди
+# обработки, nack с requeue). Сверх лимита quorum-очередь сама отправляет его в DLX.
+DELIVERY_LIMIT = 3
+
 NEW_PAYMENTS_QUEUE = RabbitQueue(
     "payments.new",
+    queue_type=QueueType.QUORUM,
     durable=True,
     routing_key="payments.new",
-    arguments={"x-dead-letter-exchange": DEAD_LETTER_EXCHANGE.name},
+    arguments={
+        "x-dead-letter-exchange": DEAD_LETTER_EXCHANGE.name,
+        "x-delivery-limit": DELIVERY_LIMIT,
+    },
 )
 DEAD_LETTER_QUEUE = RabbitQueue("payments.dlq", durable=True)
 

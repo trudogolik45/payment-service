@@ -24,6 +24,7 @@ from app.log_config import LOG_FORMAT
 from app.schemas import PaymentCreatedEvent
 from app.services.processing import PaymentNotFoundError, PaymentProcessor
 from app.webhook import WebhookNotifier
+from app.webhook_policy import WebhookUrlPolicy
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ def build_consumer(settings: Settings) -> FastStream:
                 http_client,
                 secret=settings.webhook_secret,
                 timeout_seconds=settings.webhook_timeout_seconds,
+                policy=WebhookUrlPolicy(settings.webhook_allowed_hosts),
             ),
         )
         app.context.set_global("processor", processor)

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -131,3 +132,28 @@ async def test_cleanup_deletes_only_old_published_events(
 
 async def _noop(event: OutboxEvent) -> None:
     pass
+
+
+async def test_run_cleans_up_periodically_until_stopped(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    class CountingRelay(OutboxRelay):
+        cleanups = 0
+
+        async def cleanup_once(self) -> int:
+            self.cleanups += 1
+            return 0
+
+    relay = CountingRelay(
+        session_factory,
+        publisher=_noop,
+        batch_size=10,
+        poll_interval_seconds=0.01,
+        cleanup_interval_seconds=0.05,
+    )
+    stop = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.2, stop.set)
+
+    await relay.run(stop)
+
+    assert 3 <= relay.cleanups <= 6

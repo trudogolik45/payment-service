@@ -1,11 +1,10 @@
-"""Приёмник webhook'ов для демонстрации: проверяет подпись и логирует всё, что прилетает."""
+"""Приёмник webhook'ов для демонстрации: проверяет подпись (с timestamp) и логирует."""
 
-import hmac
 import logging
 import os
 from typing import Any
 
-from app.webhook import SIGNATURE_HEADER, sign
+from app.webhook import SIGNATURE_HEADER, TIMESTAMP_HEADER, verify
 from fastapi import FastAPI, HTTPException, Request
 
 log = logging.getLogger("webhook-sink")
@@ -23,7 +22,9 @@ def _secret() -> str:
 @app.post("/webhooks", status_code=204)
 async def receive(request: Request) -> None:
     body = await request.body()
-    if not hmac.compare_digest(request.headers.get(SIGNATURE_HEADER, ""), sign(_secret(), body)):
+    timestamp = request.headers.get(TIMESTAMP_HEADER, "")
+    signature = request.headers.get(SIGNATURE_HEADER, "")
+    if not verify(_secret(), timestamp, signature, body):
         raise HTTPException(401, "bad webhook signature")
     payload = await request.json()
     received.append(payload)

@@ -65,6 +65,11 @@ class OutboxEvent(Base):
     __tablename__ = "outbox"
     __table_args__ = (
         Index("ix_outbox_unpublished", "id", postgresql_where=text("published_at IS NULL")),
+        Index(
+            "ix_outbox_published_at",
+            "published_at",
+            postgresql_where=text("published_at IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)

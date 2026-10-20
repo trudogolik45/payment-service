@@ -60,13 +60,21 @@ webhook уходит, retry не нужен.
 - **Dead Letter Queue.** После последней неудачной попытки (или если платёж из сообщения
   не найден в БД) сообщение отклоняется, и RabbitMQ через `x-dead-letter-exchange`
   переносит его в `payments.dlq`. В заголовке `x-death` — история.
+- **Лимит доставок.** `payments.new` — quorum-очередь с `x-delivery-limit`. Если consumer
+  умирает посреди обработки, сообщение возвращается без увеличения `x-attempt`; после
+  трёх таких возвратов RabbitMQ сам отправляет его в DLQ (`x-death.reason =
+  delivery_limit`).
 - **Аутентификация.** Статический ключ в заголовке `X-API-Key` для всех эндпоинтов API.
   `GET /health` — liveness-проба без ключа.
-- **Подпись webhook.** Тело подписывается HMAC-SHA256 с `WEBHOOK_SECRET`, подпись в заголовке
-  `X-Webhook-Signature: sha256=<hex>`. Получатель проверяет её и отбрасывает подделки.
+- **Подпись webhook.** Строка `<timestamp>.<body>` подписывается HMAC-SHA256
+  с `WEBHOOK_SECRET`; заголовки `X-Webhook-Timestamp` и `X-Webhook-Signature: sha256=<hex>`.
+  Получатель проверяет подпись и возраст timestamp (окно 5 минут) — подделку и повтор
+  перехваченного запроса он отбрасывает.
 - **Защита от SSRF.** `webhook_url` с хостом во внутренней сети (loopback, private,
-  link-local, не резолвится) отклоняется с `422`. Исключение — хосты из
-  `WEBHOOK_ALLOWED_HOSTS` (в compose это `webhook-sink`).
+  link-local, IPv4 в IPv6-обёртках, не резолвится) отклоняется с `422`. Перед каждой
+  отправкой адрес резолвится и проверяется снова, а соединение идёт на проверенный IP
+  с исходными `Host` и SNI — DNS rebinding между созданием и доставкой не проходит.
+  Исключение — хосты из `WEBHOOK_ALLOWED_HOSTS` (в compose это `webhook-sink`).
 - **Очистка outbox.** Relay раз в `OUTBOX_CLEANUP_INTERVAL_SECONDS` удаляет опубликованные
   события старше `OUTBOX_RETENTION_HOURS`.
 
@@ -151,7 +159,8 @@ curl -s http://localhost:8000/api/v1/payments/<payment_id> -H "X-API-Key: dev-ap
 }
 ```
 
-Заголовок `X-Webhook-Signature: sha256=<hex>` — HMAC-SHA256 от тела с `WEBHOOK_SECRET`.
+Заголовки `X-Webhook-Timestamp` и `X-Webhook-Signature: sha256=<hex>` — HMAC-SHA256
+от `<timestamp>.<body>` с `WEBHOOK_SECRET`.
 Любой ответ не 2xx или сетевая ошибка считаются неудачной доставкой и запускают retry.
 Посмотреть, что получил демо-приёмник: `curl -s http://localhost:8080/webhooks`.
 
@@ -193,22 +202,17 @@ docker compose logs -f consumer
 | `CONSUMER_PREFETCH_COUNT` | `10` | Prefetch consumer'а |
 | `*_PORT` | `5432`, `5672`, `15672`, `8000`, `8080` | Порты на хосте |
 
-Аргументы очередей (TTL retry-очередей) фиксируются при первом объявлении: после смены
-`MAX_ATTEMPTS` или `RETRY_BASE_DELAY_SECONDS` удалите старые очереди `payments.new.retry.*`.
+Аргументы очередей фиксируются при первом объявлении: после смены `MAX_ATTEMPTS`
+или `RETRY_BASE_DELAY_SECONDS` удалите старые очереди `payments.new.retry.*`.
 
 ## Ограничения
 
-- Защита от SSRF проверяет адрес при создании платежа; от DNS rebinding между созданием
-  и доставкой она не защищает.
-- Если consumer умирает посреди обработки, сообщение возвращается в очередь без увеличения
-  `x-attempt`. Для classic queue лимита доставок нет; защита — quorum queue
-  с `x-delivery-limit`.
 - Событие outbox, которое не удаётся опубликовать в принципе, остаётся в таблице
   и логируется на каждой итерации; в проде нужен счётчик попыток и карантин.
 - Если шлюз списал деньги, а commit в БД не прошёл, повтор спишет ещё раз. Реальному
   шлюзу нужно передавать ключ идемпотентности (например, `payment.id`).
-- Подпись webhook не содержит timestamp, поэтому перехваченный запрос можно повторить.
-  Защита — `X-Webhook-Timestamp` в подписываемой строке и окно допустимого возраста.
+- `basic.nack` с requeue (сбой публикации в retry-очередь) в RabbitMQ 4.x не считается
+  в `x-delivery-limit`; такой возврат ограничен только паузой перед nack.
 
 ## Разработка
 
@@ -225,7 +229,8 @@ uv run mypy
 
 Тесты: unit (схемы, шлюз, webhook, retry-логика через `TestRabbitBroker`), с PostgreSQL
 (API, идемпотентность с конкурентными запросами, outbox relay, процессор с конкурентной
-доставкой) и с настоящим RabbitMQ (retry по TTL → DLQ с `x-death`; сквозной запуск
+доставкой) и с настоящим RabbitMQ (retry по TTL → DLQ с `x-death`; лимит доставок при
+обрыве соединения consumer'а; сквозной запуск
 consumer'а через его хуки старта: БД → шлюз → webhook на локальный HTTP-сервер).
 
 Локальный запуск сервисов без Docker:

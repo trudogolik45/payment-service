@@ -11,12 +11,14 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
 
+import aio_pika
 import httpx
 import pytest
 import uvicorn
 from app.broker import (
     ATTEMPT_HEADER,
     DEAD_LETTER_QUEUE,
+    DELIVERY_LIMIT,
     NEW_PAYMENTS_QUEUE,
     PAYMENTS_EXCHANGE,
     declare_topology,
@@ -25,7 +27,7 @@ from app.config import Settings
 from app.consumer import build_consumer
 from app.models import PaymentStatus
 from faststream import TestApp
-from faststream.rabbit import TestRabbitBroker
+from faststream.rabbit import RabbitBroker, TestRabbitBroker
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tools import webhook_sink
 
@@ -184,10 +186,43 @@ async def test_consumer_starts_and_processes_payment_end_to_end(
 
 
 async def test_webhook_sink_rejects_bad_signature(webhook_sink_url: str) -> None:
+    headers = {"X-Webhook-Timestamp": str(int(time.time())), "X-Webhook-Signature": "sha256=bad"}
     async with httpx.AsyncClient() as client:
-        response = await client.post(
-            webhook_sink_url, content=b"{}", headers={"X-Webhook-Signature": "sha256=bad"}
-        )
+        response = await client.post(webhook_sink_url, content=b"{}", headers=headers)
 
     assert response.status_code == 401
     assert webhook_sink.received == []
+
+
+async def test_message_is_dead_lettered_after_consumer_crashes_too_many_times(
+    integration_settings: Settings,
+) -> None:
+    """Consumer умирает посреди обработки (обрыв соединения без ack): quorum-очередь
+    считает такие доставки и после DELIVERY_LIMIT переносит сообщение в DLQ."""
+    broker = RabbitBroker(integration_settings.rabbitmq_url)
+    async with broker:
+        await declare_topology(broker, integration_settings)
+        await broker.publish(
+            {"payment_id": str(uuid4())},
+            exchange=PAYMENTS_EXCHANGE,
+            routing_key=NEW_PAYMENTS_QUEUE.routing_key,
+        )
+        delivery_counts = [
+            await _acquire_and_crash(integration_settings.rabbitmq_url)
+            for _ in range(DELIVERY_LIMIT + 1)
+        ]
+        dead = await _wait_for_message(await broker.declare_queue(DEAD_LETTER_QUEUE))
+
+    assert delivery_counts == [0, *range(1, DELIVERY_LIMIT + 1)]
+    assert dead.headers["x-death"][0]["reason"] == "delivery_limit"
+
+
+async def _acquire_and_crash(url: str) -> int:
+    """Берёт сообщение без ack и рвёт соединение. Возвращает x-delivery-count доставки."""
+    connection = await aio_pika.connect(url)
+    channel = await connection.channel()
+    queue = await channel.get_queue(NEW_PAYMENTS_QUEUE.name)
+    message = await queue.get(no_ack=False, fail=False, timeout=5)
+    assert message is not None
+    await connection.close()
+    return int(message.headers.get("x-delivery-count", 0))

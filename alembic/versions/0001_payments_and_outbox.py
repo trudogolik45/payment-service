@@ -67,6 +67,12 @@ def upgrade() -> None:
         ["id"],
         postgresql_where=sa.text("published_at IS NULL"),
     )
+    op.create_index(
+        "ix_outbox_published_at",
+        "outbox",
+        ["published_at"],
+        postgresql_where=sa.text("published_at IS NOT NULL"),
+    )
 
 
 def downgrade() -> None:

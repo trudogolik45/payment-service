@@ -4,7 +4,13 @@ from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
-from app.broker import NEW_PAYMENTS_QUEUE, PAYMENTS_EXCHANGE, retry_delay_seconds, retry_queue
+from app.broker import (
+    DELIVERY_LIMIT,
+    NEW_PAYMENTS_QUEUE,
+    PAYMENTS_EXCHANGE,
+    retry_delay_seconds,
+    retry_queue,
+)
 from app.config import Settings
 from app.consumer import build_consumer, schedule_retry
 from app.schemas import PaymentCreatedEvent
@@ -65,6 +71,13 @@ def make_harness(settings: Settings) -> Any:
             yield harness
 
     return _make
+
+
+def test_main_queue_is_quorum_with_delivery_limit_and_dlx() -> None:
+    assert NEW_PAYMENTS_QUEUE.arguments is not None
+    assert NEW_PAYMENTS_QUEUE.arguments["x-queue-type"] == "quorum"
+    assert NEW_PAYMENTS_QUEUE.arguments["x-delivery-limit"] == DELIVERY_LIMIT
+    assert NEW_PAYMENTS_QUEUE.arguments["x-dead-letter-exchange"] == "payments.dlx"
 
 
 def test_retry_delays_grow_exponentially(settings: Settings) -> None:
