@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     outbox_poll_interval_seconds: float = Field(default=0.5, gt=0)
     outbox_batch_size: int = Field(default=100, ge=1)
     outbox_retention_hours: int = Field(default=24, ge=1)
+    outbox_max_attempts: int = Field(default=10, ge=1)
     outbox_cleanup_interval_seconds: float = Field(default=60, gt=0)
     consumer_prefetch_count: int = Field(default=10, ge=1)
 

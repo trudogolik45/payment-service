@@ -67,6 +67,32 @@ async def test_relay_keeps_event_unpublished_when_publish_fails(
 
     events = await fetch_outbox(session_factory)
     assert events[0].published_at is None
+    assert events[0].attempts == 1
+    assert "broker down" in (events[0].last_error or "")
+
+
+async def test_event_is_quarantined_after_max_attempts(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _add_events(session_factory, 1)
+    calls = 0
+
+    async def publisher(event: OutboxEvent) -> None:
+        nonlocal calls
+        calls += 1
+        raise KeyError("unknown event type")
+
+    relay = OutboxRelay(
+        session_factory, publisher, batch_size=10, poll_interval_seconds=0, max_attempts=2
+    )
+
+    for _ in range(4):
+        await relay.relay_once()
+
+    assert calls == 2
+    event = (await fetch_outbox(session_factory))[0]
+    assert event.published_at is None
+    assert event.attempts == 2
 
 
 async def test_poison_event_does_not_block_the_rest_of_the_batch(

@@ -4,7 +4,7 @@ from typing import Protocol
 from uuid import UUID
 
 from faststream import Context, FastStream
-from faststream.exceptions import NackMessage
+from faststream.exceptions import RejectMessage
 from faststream.rabbit import Channel, RabbitBroker, RabbitMessage
 
 from app.broker import (
@@ -41,9 +41,11 @@ async def schedule_retry(
 ) -> None:
     """Кладёт событие в retry-очередь; по TTL оно вернётся в payments.new.
 
-    Если положить не удалось, сообщение после паузы возвращается в очередь как
-    есть — иначе сбой брокера отправил бы его в DLQ раньше времени. Пауза
-    удерживает слот prefetch, зато не даёт сообщению крутиться без задержки.
+    Если положить не удалось, сообщение после паузы возвращается в очередь
+    через basic.reject(requeue=True): в отличие от nack такой возврат
+    считается в x-delivery-limit quorum-очереди, поэтому он ограничен и
+    заканчивается в DLQ. Пауза удерживает слот prefetch, зато не даёт
+    сообщению крутиться без задержки.
     """
     try:
         await broker.publish(
@@ -55,7 +57,7 @@ async def schedule_retry(
     except Exception as exc:
         log.exception("payment %s: retry publish failed, requeueing", event.payment_id)
         await asyncio.sleep(retry_delay_seconds(attempt, settings))
-        raise NackMessage(requeue=True) from exc
+        raise RejectMessage(requeue=True) from exc
 
 
 def register_handlers(broker: RabbitBroker, settings: Settings) -> None:

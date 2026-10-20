@@ -60,6 +60,8 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("last_error", sa.Text(), nullable=True),
     )
     op.create_index(
         "ix_outbox_unpublished",

@@ -60,7 +60,7 @@ class PaymentProcessor:
     async def _charge_if_pending(self, payment: Payment) -> None:
         if payment.status is not PaymentStatus.PENDING:
             return
-        payment.status = await self._gateway.charge()
+        payment.status = await self._gateway.charge(payment.id)
         payment.processed_at = datetime.now(UTC)
         log.info("payment %s processed: %s", payment.id, payment.status.value)
 

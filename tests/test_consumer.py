@@ -15,7 +15,7 @@ from app.config import Settings
 from app.consumer import build_consumer, schedule_retry
 from app.schemas import PaymentCreatedEvent
 from app.services.processing import PaymentNotFoundError
-from faststream.exceptions import NackMessage
+from faststream.exceptions import RejectMessage
 from faststream.rabbit import RabbitBroker, RabbitMessage, RabbitQueue, TestRabbitBroker
 
 
@@ -154,7 +154,10 @@ async def test_retry_publish_failure_requeues_instead_of_dead_lettering(
     broker = cast(RabbitBroker, BrokenBroker())
     event = PaymentCreatedEvent(payment_id=uuid4())
 
-    with patch("app.consumer.asyncio.sleep", new=AsyncMock()) as sleep, pytest.raises(NackMessage):
+    with (
+        patch("app.consumer.asyncio.sleep", new=AsyncMock()) as sleep,
+        pytest.raises(RejectMessage),
+    ):
         await schedule_retry(broker, event, attempt=1, settings=settings)
 
     assert sleep.call_args.args[0] == retry_delay_seconds(1, settings)

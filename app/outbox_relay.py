@@ -4,8 +4,10 @@
 несколько экземпляров. Гарантия — at-least-once: если публикация прошла,
 а commit нет, событие будет опубликовано повторно; consumer идемпотентен.
 Сбой публикации одного события не блокирует остальные: строка остаётся
-неопубликованной и будет взята снова на следующей итерации.
-Опубликованные события старше retention периодически удаляются.
+неопубликованной и будет взята снова на следующей итерации. После
+max_attempts неудач событие уходит в карантин: остаётся в таблице с
+attempts и last_error, но больше не выбирается — ядовитое событие не
+занимает relay вечно. Опубликованные события старше retention удаляются.
 """
 
 import asyncio
@@ -44,6 +46,7 @@ class OutboxRelay:
         poll_interval_seconds: float,
         retention: timedelta = timedelta(hours=24),
         cleanup_interval_seconds: float = 60,
+        max_attempts: int = 10,
     ) -> None:
         self._session_factory = session_factory
         self._publish = publisher
@@ -51,6 +54,7 @@ class OutboxRelay:
         self._poll_interval = poll_interval_seconds
         self._retention = retention
         self._cleanup_interval = cleanup_interval_seconds
+        self._max_attempts = max_attempts
 
     async def relay_once(self) -> int:
         """Публикует одну пачку неопубликованных событий. Возвращает число опубликованных."""
@@ -79,11 +83,23 @@ class OutboxRelay:
     async def _publish_one(self, event: OutboxEvent) -> bool:
         try:
             await self._publish(event)
-        except Exception:
-            log.exception("outbox event %d publish failed, will retry", event.id)
+        except Exception as exc:
+            self._record_failure(event, exc)
             return False
         event.published_at = datetime.now(UTC)
         return True
+
+    def _record_failure(self, event: OutboxEvent, exc: Exception) -> None:
+        event.attempts += 1
+        event.last_error = repr(exc)[:1000]
+        if event.attempts >= self._max_attempts:
+            log.error(
+                "outbox event %d quarantined after %d attempts: %r", event.id, event.attempts, exc
+            )
+            return
+        log.exception(
+            "outbox event %d publish failed (attempt %d), will retry", event.id, event.attempts
+        )
 
     async def _relay_safely(self) -> int:
         try:
@@ -108,7 +124,7 @@ class OutboxRelay:
     def _pending_batch(self) -> Select[OutboxEvent]:
         return (
             select(OutboxEvent)
-            .where(OutboxEvent.published_at.is_(None))
+            .where(OutboxEvent.published_at.is_(None), OutboxEvent.attempts < self._max_attempts)
             .order_by(OutboxEvent.id)
             .limit(self._batch_size)
             .with_for_update(skip_locked=True)
@@ -146,6 +162,7 @@ async def main(settings: Settings) -> None:
             poll_interval_seconds=settings.outbox_poll_interval_seconds,
             retention=timedelta(hours=settings.outbox_retention_hours),
             cleanup_interval_seconds=settings.outbox_cleanup_interval_seconds,
+            max_attempts=settings.outbox_max_attempts,
         )
         log.info("outbox relay started")
         await relay.run(stop)

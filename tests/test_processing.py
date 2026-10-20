@@ -1,5 +1,5 @@
 import asyncio
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from app.models import Payment, PaymentStatus
@@ -15,9 +15,11 @@ class StubGateway:
         self.result = result
         self.delay = delay
         self.calls = 0
+        self.keys: list[UUID] = []
 
-    async def charge(self) -> PaymentStatus:
+    async def charge(self, idempotency_key: UUID) -> PaymentStatus:
         self.calls += 1
+        self.keys.append(idempotency_key)
         await asyncio.sleep(self.delay)
         return self.result
 
@@ -46,6 +48,7 @@ async def test_processes_pending_payment_and_notifies(
     assert stored.processed_at is not None
     assert stored.webhook_delivered_at is not None
     assert [p.id for p in notifier.notified] == [payment.id]
+    assert gateway.keys == [payment.id]
 
 
 async def test_stores_failed_status_from_gateway(

@@ -27,6 +27,7 @@ from app.config import Settings
 from app.consumer import build_consumer
 from app.models import PaymentStatus
 from faststream import TestApp
+from faststream.exceptions import RejectMessage
 from faststream.rabbit import RabbitBroker, TestRabbitBroker
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tools import webhook_sink
@@ -226,3 +227,29 @@ async def _acquire_and_crash(url: str) -> int:
     assert message is not None
     await connection.close()
     return int(message.headers.get("x-delivery-count", 0))
+
+
+async def test_requeue_by_reject_is_bounded_by_delivery_limit(
+    integration_settings: Settings,
+) -> None:
+    """Путь «не удалось положить в retry-очередь»: reject с requeue считается в лимит."""
+    broker = RabbitBroker(integration_settings.rabbitmq_url)
+    deliveries = 0
+
+    @broker.subscriber(NEW_PAYMENTS_QUEUE, PAYMENTS_EXCHANGE)
+    async def reject_forever(body: dict[str, Any]) -> None:
+        nonlocal deliveries
+        deliveries += 1
+        raise RejectMessage(requeue=True)
+
+    async with TestRabbitBroker(broker, with_real=True):
+        await declare_topology(broker, integration_settings)
+        await broker.publish(
+            {"payment_id": str(uuid4())},
+            exchange=PAYMENTS_EXCHANGE,
+            routing_key=NEW_PAYMENTS_QUEUE.routing_key,
+        )
+        dead = await _wait_for_message(await broker.declare_queue(DEAD_LETTER_QUEUE))
+
+    assert dead.headers["x-death"][0]["reason"] == "delivery_limit"
+    assert deliveries == DELIVERY_LIMIT + 1
