@@ -96,7 +96,7 @@ docker compose up -d --build
 
 - API: http://localhost:8000, Swagger: http://localhost:8000/docs
 - RabbitMQ Management: http://localhost:15672 (guest / guest)
-- Postgres, RabbitMQ и webhook-sink опубликованы только на `127.0.0.1`
+- Все порты опубликованы только на `127.0.0.1`
 - Логи: `docker compose logs -f api outbox-relay consumer webhook-sink`
 - Остановить вместе с данными: `docker compose down -v`
 
@@ -234,10 +234,11 @@ docker compose logs -f consumer
 | FastAPI + Pydantic v2, SQLAlchemy 2.0 async, PostgreSQL, RabbitMQ (FastStream), Alembic, Docker + compose | `pyproject.toml`, `docker-compose.yml`, `Dockerfile` | `make check`, `docker compose up` |
 | README с запуском и примерами | этот файл | — |
 
-Два места, где реализация шире формулировки ТЗ: retry сделан через отдельные очереди
+Где реализация шире формулировки ТЗ: retry сделан через отдельные очереди
 с TTL (а не sleep в consumer'е), чтобы не держать слот prefetch и не терять сообщение при
 падении; эмулятор шлюза идемпотентен по `payment.id` в пределах процесса, как был бы
-настоящий шлюз.
+настоящий шлюз. Сверх ТЗ: защита `webhook_url` от SSRF и HMAC-подпись webhook.
+Почему так — в `docs/adr/`.
 
 ## Разработка
 
@@ -288,6 +289,7 @@ app/
   consumer.py          FastStream-приложение, retry/DLQ-логика
   outbox_relay.py      outbox → RabbitMQ, очистка старых событий
 alembic/               миграции
+docs/adr/              архитектурные решения и отвергнутые варианты
 tests/                 pytest
 tools/webhook_sink.py  демо-приёмник webhook'ов
 ```
