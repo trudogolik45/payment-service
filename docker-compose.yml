@@ -60,7 +60,7 @@ services:
 
   outbox-relay:
     <<: *app
-    command: ["python", "-m", "app.outbox_relay"]
+    command: ["python", "-m", "app.services.outbox_relay"]
     depends_on:
       migrate:
         condition: service_completed_successfully

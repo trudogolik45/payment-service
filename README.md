@@ -227,9 +227,9 @@ docker compose logs -f consumer
 | Сущность Payment: id, сумма decimal, валюта RUB/USD/EUR, описание, метаданные JSON, статус pending/succeeded/failed, idempotency key, webhook URL, даты создания и обработки | `app/models.py`, миграция `alembic/versions/0001_*` | `make migrations-check` (`alembic check`), `tests/test_api.py` |
 | `POST /api/v1/payments`, заголовок `Idempotency-Key` обязателен, ответ 202 с `payment_id`, статусом, `created_at` | `app/api/payments.py` | `tests/test_api.py` |
 | `GET /api/v1/payments/{payment_id}` с деталями | `app/api/payments.py`, `PaymentOut` | `tests/test_api.py` |
-| Публикация события в `payments.new` при создании | outbox-строка в той же транзакции (`app/services/payments.py`), `app/outbox_relay.py` | `tests/test_api.py`, `tests/test_outbox_relay.py` |
+| Публикация события в `payments.new` при создании | outbox-строка в той же транзакции (`app/services/payments.py`), `app/services/outbox_relay.py`, `app/repositories/outbox.py` | `tests/test_api.py`, `tests/test_outbox_relay.py` |
 | Один consumer: получает, эмулирует обработку 2–5 с / 90 % успех, обновляет статус, шлёт webhook, повторяет при ошибках отправки | `app/consumer.py`, `app/services/processing.py`, `app/gateway.py`, `app/webhook.py` | `tests/test_consumer.py`, `tests/test_processing.py`, `tests/test_gateway.py`, `tests/test_webhook.py`, сквозной тест в `tests/test_rabbitmq_integration.py` |
-| Outbox pattern | `app/outbox_relay.py` (FOR UPDATE SKIP LOCKED, publisher confirms, карантин) | `tests/test_outbox_relay.py` |
+| Outbox pattern | `app/services/outbox_relay.py`, `app/repositories/outbox.py` (FOR UPDATE SKIP LOCKED, publisher confirms, карантин) | `tests/test_outbox_relay.py` |
 | Idempotency key против дублей | `INSERT … ON CONFLICT DO NOTHING`, сравнение отпечатка тела → 409 | `tests/test_api.py` (включая конкурентные запросы) |
 | Retry: 3 попытки с экспоненциальной задержкой | retry-очереди с TTL 2 с и 4 с, заголовок `x-attempt` (`app/broker.py`, `app/consumer.py`) | `tests/test_consumer.py`, `tests/test_rabbitmq_integration.py` |
 | DLQ для сообщений, не обработанных после 3 попыток | `payments.dlx` → `payments.dlq`, плюс `x-delivery-limit` quorum-очереди | `tests/test_rabbitmq_integration.py` |
@@ -267,7 +267,7 @@ consumer'а через его хуки старта: БД → шлюз → webho
 ```bash
 uv run alembic upgrade head
 uv run uvicorn app.main:app_factory --factory --reload
-uv run python -m app.outbox_relay
+uv run python -m app.services.outbox_relay
 uv run faststream run app.consumer:app_factory --factory
 ```
 
@@ -284,14 +284,15 @@ app/
   schemas.py           Pydantic-схемы запросов, ответов, событий, webhook
   models.py            SQLAlchemy: payments, outbox
   repositories/payments.py запросы к БД по платежу
+  repositories/outbox.py запросы к БД по событию outbox
   services/payments.py создание платежа + outbox, идемпотентность
   services/processing.py обработчик платежа (шлюз → БД → webhook)
+  services/outbox_relay.py outbox → RabbitMQ, очистка старых событий
   gateway.py           эмуляция платёжного шлюза
   webhook.py           отправка webhook с HMAC-подписью
   webhook_policy.py    защита от SSRF для webhook_url
   broker.py            топология RabbitMQ: exchange, очереди, retry, DLQ
   consumer.py          FastStream-приложение, retry/DLQ-логика
-  outbox_relay.py      outbox → RabbitMQ, очистка старых событий
 alembic/               миграции
 docs/adr/              архитектурные решения и отвергнутые варианты
 tests/                 pytest
