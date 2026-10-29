@@ -16,10 +16,8 @@ import logging
 import signal
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
 
 from faststream.rabbit import RabbitBroker
-from sqlalchemy import CursorResult, Select, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.broker import NEW_PAYMENTS_QUEUE, PAYMENTS_EXCHANGE, create_broker, declare_topology
@@ -27,6 +25,7 @@ from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory
 from app.log_config import LOG_FORMAT
 from app.models import OutboxEvent
+from app.repositories.outbox import OutboxRepository
 from app.schemas import PAYMENT_CREATED
 
 log = logging.getLogger(__name__)
@@ -59,16 +58,16 @@ class OutboxRelay:
     async def relay_once(self) -> int:
         """Публикует одну пачку неопубликованных событий. Возвращает число опубликованных."""
         async with self._session_factory() as session, session.begin():
-            events: list[OutboxEvent] = list(await session.scalars(self._pending_batch()))
+            events = await OutboxRepository(session).lock_pending_batch(
+                self._batch_size, self._max_attempts
+            )
             return sum([await self._publish_one(event) for event in events])
 
     async def cleanup_once(self) -> int:
         """Удаляет опубликованные события старше retention. Возвращает число удалённых."""
         threshold = datetime.now(UTC) - self._retention
-        stmt = delete(OutboxEvent).where(OutboxEvent.published_at < threshold)
         async with self._session_factory() as session, session.begin():
-            result = cast(CursorResult[Any], await session.execute(stmt))
-            return result.rowcount
+            return await OutboxRepository(session).delete_published_before(threshold)
 
     async def run(self, stop: asyncio.Event) -> None:
         next_cleanup = 0.0
@@ -120,15 +119,6 @@ class OutboxRelay:
     async def _sleep(self, stop: asyncio.Event) -> None:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=self._poll_interval)
-
-    def _pending_batch(self) -> Select[OutboxEvent]:
-        return (
-            select(OutboxEvent)
-            .where(OutboxEvent.published_at.is_(None), OutboxEvent.attempts < self._max_attempts)
-            .order_by(OutboxEvent.id)
-            .limit(self._batch_size)
-            .with_for_update(skip_locked=True)
-        )
 
 
 def rabbit_publisher(broker: RabbitBroker) -> Publisher:

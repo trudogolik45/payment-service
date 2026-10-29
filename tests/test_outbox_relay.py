@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.models import OutboxEvent
-from app.outbox_relay import OutboxRelay
+from app.services.outbox_relay import OutboxRelay
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import fetch_outbox
