@@ -40,10 +40,12 @@ class PaymentRepository:
         return await self._session.scalar(stmt)
 
     async def get_by_idempotency_key(self, idempotency_key: str) -> Payment | None:
+        """Находит Платёж по Ключу идемпотентности."""
         stmt = select(Payment).where(Payment.idempotency_key == idempotency_key)
         return await self._session.scalar(stmt)
 
     async def get(self, payment_id: UUID) -> Payment | None:
+        """Находит Платёж по id."""
         return await self._session.get(Payment, payment_id)
 
     async def save_charge_if_pending(
@@ -58,7 +60,7 @@ class PaymentRepository:
         )
         return await self._session.scalar(stmt)
 
-    async def mark_delivered_if_not(self, payment_id: UUID, delivered_at: datetime) -> bool:
+    async def mark_delivered_if_undelivered(self, payment_id: UUID, delivered_at: datetime) -> bool:
         """Отмечает доставку Уведомления; False, если отметка уже стоит."""
         stmt = (
             update(Payment)

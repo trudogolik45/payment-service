@@ -69,7 +69,7 @@ class PaymentProcessor:
     async def _notify(self, payment: Payment) -> None:
         await self._notifier.notify(payment)
         async with self._session_factory() as session, session.begin():
-            marked = await PaymentRepository(session).mark_delivered_if_not(
+            marked = await PaymentRepository(session).mark_delivered_if_undelivered(
                 payment.id, datetime.now(UTC)
             )
         if not marked:

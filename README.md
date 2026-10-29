@@ -50,7 +50,8 @@ webhook уходит, retry не нужен.
   Повтор с тем же ключом и телом возвращает тот же платёж без нового события. Тот же ключ
   с другим телом — `409 Conflict`.
 - **Идемпотентность consumer'а.** Платёж со статусом не `pending` не отправляется в шлюз
-  повторно, уже доставленный webhook (`webhook_delivered_at`) не шлётся повторной доставкой.
+  повторно, уже доставленный webhook (`webhook_delivered_at`) повторно не отправляется: Уведомление приходит «как минимум один раз», при
+  параллельных доставках может прийти дважды.
   В шлюз передаётся ключ идемпотентности (`payment.id`): если деньги списаны, а commit
   в БД не прошёл, повторный вызов вернёт прежний результат, а не спишет второй раз.
   Эмулятор ведёт себя так же в пределах процесса.
@@ -283,8 +284,8 @@ app/
   auth.py              X-API-Key
   schemas.py           Pydantic-схемы запросов, ответов, событий, webhook
   models.py            SQLAlchemy: payments, outbox
-  repositories/payments.py запросы к БД по платежу
-  repositories/outbox.py запросы к БД по событию outbox
+  repositories/payments.py  запросы к БД по платежу
+  repositories/outbox.py    запросы к БД по событию outbox
   services/payments.py создание платежа + outbox, идемпотентность
   services/processing.py обработчик платежа (шлюз → БД → webhook)
   services/outbox_relay.py outbox → RabbitMQ, очистка старых событий
