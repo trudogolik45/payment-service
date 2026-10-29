@@ -280,6 +280,7 @@ app/
   auth.py              X-API-Key
   schemas.py           Pydantic-схемы запросов, ответов, событий, webhook
   models.py            SQLAlchemy: payments, outbox
+  repositories/payments.py запросы к БД по платежу
   services/payments.py создание платежа + outbox, идемпотентность
   services/processing.py обработчик платежа (шлюз → БД → webhook)
   gateway.py           эмуляция платёжного шлюза

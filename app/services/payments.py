@@ -2,11 +2,10 @@ import hashlib
 import json
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import OutboxEvent, Payment
+from app.repositories.payments import PaymentRepository
 from app.schemas import PAYMENT_CREATED, PaymentCreate, PaymentCreatedEvent
 from app.webhook_policy import WebhookUrlPolicy
 
@@ -23,6 +22,7 @@ def request_fingerprint(data: PaymentCreate) -> str:
 class PaymentService:
     def __init__(self, session: AsyncSession, webhook_policy: WebhookUrlPolicy) -> None:
         self._session = session
+        self._payments = PaymentRepository(session)
         self._webhook_policy = webhook_policy
 
     async def create(self, data: PaymentCreate, idempotency_key: str) -> Payment:
@@ -35,11 +35,11 @@ class PaymentService:
         """
         fingerprint = request_fingerprint(data)
         async with self._session.begin():
-            is_new = await self._get_by_idempotency_key(idempotency_key) is None
+            is_new = await self._payments.get_by_idempotency_key(idempotency_key) is None
         if is_new:
             await self._webhook_policy.validate(str(data.webhook_url))
         async with self._session.begin():
-            payment = await self._insert_if_absent(data, idempotency_key, fingerprint)
+            payment = await self._payments.add_if_absent(data, idempotency_key, fingerprint)
             if payment is not None:
                 self._session.add(
                     OutboxEvent(
@@ -49,33 +49,10 @@ class PaymentService:
                 )
                 return payment
 
-        existing = await self._get_by_idempotency_key(idempotency_key)
+        existing = await self._payments.get_by_idempotency_key(idempotency_key)
         if existing is None or existing.request_hash != fingerprint:
             raise IdempotencyConflictError(idempotency_key)
         return existing
 
     async def get(self, payment_id: UUID) -> Payment | None:
-        return await self._session.get(Payment, payment_id)
-
-    async def _insert_if_absent(
-        self, data: PaymentCreate, idempotency_key: str, fingerprint: str
-    ) -> Payment | None:
-        stmt = (
-            insert(Payment)
-            .values(
-                amount=data.amount,
-                currency=data.currency,
-                description=data.description,
-                metadata_=data.metadata,
-                idempotency_key=idempotency_key,
-                request_hash=fingerprint,
-                webhook_url=str(data.webhook_url),
-            )
-            .on_conflict_do_nothing(index_elements=[Payment.idempotency_key])
-            .returning(Payment)
-        )
-        return await self._session.scalar(stmt)
-
-    async def _get_by_idempotency_key(self, idempotency_key: str) -> Payment | None:
-        stmt = select(Payment).where(Payment.idempotency_key == idempotency_key)
-        return await self._session.scalar(stmt)
+        return await self._payments.get(payment_id)

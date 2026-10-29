@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.gateway import PaymentGateway
 from app.models import Payment, PaymentStatus
+from app.repositories.payments import PaymentRepository
 from app.webhook import Notifier
 
 log = logging.getLogger(__name__)
@@ -50,9 +51,7 @@ class PaymentProcessor:
 
     async def _locked_step(self, session: AsyncSession, payment_id: UUID, step: Step) -> None:
         async with session.begin():
-            payment = await session.get(
-                Payment, payment_id, with_for_update=True, populate_existing=True
-            )
+            payment = await PaymentRepository(session).get_for_update(payment_id)
             if payment is None:
                 raise PaymentNotFoundError(payment_id)
             await step(payment)
