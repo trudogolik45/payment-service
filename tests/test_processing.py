@@ -5,7 +5,9 @@ import pytest
 from app.models import Payment, PaymentStatus
 from app.services.processing import PaymentNotFoundError, PaymentProcessor
 from app.webhook import WebhookDeliveryError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tests.conftest import fetch_payment, insert_payment
 
@@ -33,6 +35,59 @@ class StubNotifier:
         if self.fail:
             raise WebhookDeliveryError("down")
         self.notified.append(payment)
+
+
+class RowLockProbe:
+    """Пробует взять строку Платежа через FOR UPDATE NOWAIT из другой сессии."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+        self.errors: list[str] = []
+        self.idle_connections: list[int] = []
+
+    async def __call__(self, payment_id: UUID) -> None:
+        engine = self._session_factory.kw["bind"]
+        assert isinstance(engine, AsyncEngine)
+        self.idle_connections.append(engine.pool.checkedout())  # type: ignore[attr-defined]
+        stmt = select(Payment).where(Payment.id == payment_id).with_for_update(nowait=True)
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.scalar(stmt)
+        except DBAPIError as exc:
+            self.errors.append(str(exc.orig))
+
+
+class ProbingGateway(StubGateway):
+    def __init__(self, probe: RowLockProbe) -> None:
+        super().__init__(PaymentStatus.SUCCEEDED)
+        self._probe = probe
+
+    async def charge(self, idempotency_key: UUID) -> PaymentStatus:
+        await self._probe(idempotency_key)
+        return await super().charge(idempotency_key)
+
+
+class ProbingNotifier(StubNotifier):
+    def __init__(self, probe: RowLockProbe) -> None:
+        super().__init__()
+        self._probe = probe
+
+    async def notify(self, payment: Payment) -> None:
+        await self._probe(payment.id)
+        await super().notify(payment)
+
+
+async def test_payment_row_stays_unlocked_during_charge_and_notification(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    payment = await insert_payment(session_factory)
+    probe = RowLockProbe(session_factory)
+    processor = PaymentProcessor(session_factory, ProbingGateway(probe), ProbingNotifier(probe))
+
+    await processor.process(payment.id)
+
+    assert probe.errors == []
+    assert probe.idle_connections == [0, 0]
 
 
 async def test_processes_pending_payment_and_notifies(
@@ -123,14 +178,35 @@ async def test_unknown_payment_raises_not_found(
         await processor.process(uuid4())
 
 
-async def test_concurrent_duplicate_deliveries_process_payment_once(
+class SequenceGateway(StubGateway):
+    """Отвечает по очереди заданными результатами с заданными задержками."""
+
+    def __init__(self, *responses: tuple[PaymentStatus, float]) -> None:
+        super().__init__(PaymentStatus.SUCCEEDED)
+        self._responses = list(responses)
+
+    async def charge(self, idempotency_key: UUID) -> PaymentStatus:
+        self.calls += 1
+        self.keys.append(idempotency_key)
+        result, delay = self._responses.pop(0)
+        await asyncio.sleep(delay)
+        return result
+
+
+async def test_concurrent_deliveries_keep_first_charge_result(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     payment = await insert_payment(session_factory)
-    gateway, notifier = StubGateway(PaymentStatus.SUCCEEDED, delay=0.2), StubNotifier()
+    gateway = SequenceGateway((PaymentStatus.SUCCEEDED, 0.1), (PaymentStatus.FAILED, 0.3))
+    notifier = StubNotifier()
     processor = PaymentProcessor(session_factory, gateway, notifier)
 
     await asyncio.gather(processor.process(payment.id), processor.process(payment.id))
 
-    assert gateway.calls == 1
-    assert len(notifier.notified) == 1
+    stored = await fetch_payment(session_factory, payment)
+    assert gateway.keys == [payment.id, payment.id]
+    assert stored.status is PaymentStatus.SUCCEEDED
+    assert notifier.notified
+    assert {(p.status, p.processed_at) for p in notifier.notified} == {
+        (PaymentStatus.SUCCEEDED, stored.processed_at)
+    }

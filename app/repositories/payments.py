@@ -1,10 +1,11 @@
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Payment
+from app.models import Payment, PaymentStatus
 from app.schemas import PaymentCreate
 
 
@@ -45,8 +46,24 @@ class PaymentRepository:
     async def get(self, payment_id: UUID) -> Payment | None:
         return await self._session.get(Payment, payment_id)
 
-    async def get_for_update(self, payment_id: UUID) -> Payment | None:
-        """Читает Платёж под блокировкой строки, перечитывая его из БД."""
-        return await self._session.get(
-            Payment, payment_id, with_for_update=True, populate_existing=True
+    async def save_charge_if_pending(
+        self, payment_id: UUID, status: PaymentStatus, processed_at: datetime
+    ) -> Payment | None:
+        """Записывает результат Списания; None, если Платёж уже не ожидает."""
+        stmt = (
+            update(Payment)
+            .where(Payment.id == payment_id, Payment.status == PaymentStatus.PENDING)
+            .values(status=status, processed_at=processed_at)
+            .returning(Payment)
         )
+        return await self._session.scalar(stmt)
+
+    async def mark_delivered_if_not(self, payment_id: UUID, delivered_at: datetime) -> bool:
+        """Отмечает доставку Уведомления; False, если отметка уже стоит."""
+        stmt = (
+            update(Payment)
+            .where(Payment.id == payment_id, Payment.webhook_delivered_at.is_(None))
+            .values(webhook_delivered_at=delivered_at)
+            .returning(Payment.id)
+        )
+        return await self._session.scalar(stmt) is not None
