@@ -4,9 +4,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import OutboxEvent, Payment
+from app.models import Payment
+from app.repositories.outbox import OutboxRepository
 from app.repositories.payments import PaymentRepository
-from app.schemas import PAYMENT_CREATED, PaymentCreate, PaymentCreatedEvent
+from app.schemas import PaymentCreate
 from app.webhook_policy import WebhookUrlPolicy
 
 
@@ -23,6 +24,7 @@ class PaymentService:
     def __init__(self, session: AsyncSession, webhook_policy: WebhookUrlPolicy) -> None:
         self._session = session
         self._payments = PaymentRepository(session)
+        self._outbox = OutboxRepository(session)
         self._webhook_policy = webhook_policy
 
     async def create(self, data: PaymentCreate, idempotency_key: str) -> Payment:
@@ -41,12 +43,7 @@ class PaymentService:
         async with self._session.begin():
             payment = await self._payments.add_if_absent(data, idempotency_key, fingerprint)
             if payment is not None:
-                self._session.add(
-                    OutboxEvent(
-                        event_type=PAYMENT_CREATED,
-                        payload=PaymentCreatedEvent.from_model(payment).model_dump(mode="json"),
-                    )
-                )
+                self._outbox.add_payment_created(payment)
                 return payment
 
         existing = await self._payments.get_by_idempotency_key(idempotency_key)
